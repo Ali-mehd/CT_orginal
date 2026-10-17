@@ -3,9 +3,24 @@
 import base64, hashlib, html as _html, ipaddress, json, os, re, shutil, socket, ssl
 import statistics, struct, subprocess, tempfile, time, urllib.error, urllib.parse, urllib.request
 import http.client
+import threading
 from concurrent.futures import ThreadPoolExecutor
 
 MAX_LINK = 4096
+ANDROID = bool(os.environ.get("CFG_ANDROID"))  # روی اندروید: DNS داخلی هسته و محیط کامل برای پروسه‌ها
+
+
+def android_dns(cfg, c=None):
+    """Go روی اندروید resolv.conf نداره؛ پس DNS داخلی xray و freedom با UseIP."""
+    if not ANDROID:
+        return cfg
+    cfg["dns"] = {"servers": ["1.1.1.1", "8.8.8.8"]}
+    for ob in cfg.get("outbounds", []):
+        if ob.get("protocol") == "freedom":
+            ob.setdefault("settings", {})["domainStrategy"] = "UseIP"
+        elif c is not None and not c.get("ip") and ob.get("tag") != "fragment":
+            ob.setdefault("streamSettings", {}).setdefault("sockopt", {})["domainStrategy"] = "UseIP"
+    return cfg
 MAX_SUB_BYTES = 5 * 1024 * 1024
 LAT_URL = "https://www.gstatic.com/generate_204"
 IP_URL = "https://api.ipify.org"
@@ -452,11 +467,11 @@ def build_xray(c, port):
         if c.get("frag"):  # ترفند fragment فقط برای این کانفیگ (کمک به عبور از فیلتر SNI)
             st.setdefault("sockopt", {})["dialerProxy"] = "fragment"
         ob["streamSettings"] = st
-    return {"log": {"loglevel": "none"},
+    return android_dns({"log": {"loglevel": "none"},
             "inbounds": [{"listen": "127.0.0.1", "port": port, "protocol": "socks",
                           "settings": {"auth": "noauth", "udp": False}}],
             "outbounds": [ob] + ([{"tag": "fragment", "protocol": "freedom", "settings": {"fragment": {
-                "packets": "tlshello", "length": "100-200", "interval": "10-20"}}}] if c.get("frag") else [])}
+                "packets": "tlshello", "length": "100-200", "interval": "10-20"}}}] if c.get("frag") else [])}, c)
 
 
 def build_singbox(c, inbounds):
@@ -475,7 +490,7 @@ def build_singbox(c, inbounds):
                   udp_relay_mode=c["urm"] or "native")
     else:
         ob = dict(base, type="anytls", password=c["pw"])
-    return {"log": {"level": "error"}, "dns": {"servers": [{"type": "local", "tag": "l"}]}, "inbounds": inbounds,
+    return {"log": {"level": "error"}, "dns": {"servers": [({"type": "udp", "tag": "l", "server": "1.1.1.1"} if ANDROID else {"type": "local", "tag": "l"})]}, "inbounds": inbounds,
             "outbounds": [ob, {"type": "direct", "tag": "direct"}],
             "route": {"final": "proxy", "default_domain_resolver": "l"}}
 
@@ -622,9 +637,31 @@ def measure_kbps(port, secs=3.0, streams=2, timeout=6, urls=None):
     return None
 
 
-def live(c, xray, rounds, timeout, speed=False, secs=3.0):
+SITES = {"yt": "https://www.youtube.com/generate_204", "ig": "https://www.instagram.com/robots.txt",
+         "tg": "https://telegram.org/robots.txt"}
+
+
+def site_check(port, timeout=5):
+    """از داخل تونل: یوتیوب، اینستاگرام و تلگرام واقعاً می‌رسن؟ (هر پاسخ HTTP یعنی رسیده؛ فقط خطای شبکه و ۵xx یعنی نه)"""
+    res = {}
+
+    def one(k, url):
+        try:
+            st, _, _ = fetch(port, url, timeout)
+            res[k] = st < 500
+        except Exception:
+            res[k] = False
+    ths = [threading.Thread(target=one, args=(k, u), daemon=True) for k, u in SITES.items()]
+    for t in ths:
+        t.start()
+    for t in ths:
+        t.join(timeout + 1)
+    return {k: bool(res.get(k)) for k in SITES}
+
+
+def live(c, xray, rounds, timeout, speed=False, secs=3.0, sites=False):
     port, tmp = free_port(), tempfile.mkdtemp(prefix="cfgscan_")
-    env = {k: v for k, v in os.environ.items()
+    env = dict(os.environ) if ANDROID else {k: v for k, v in os.environ.items()
            if k.upper() in ("PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "COMSPEC", "USERPROFILE", "HOME")}
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     if c["proto"] in SB_PROTOS:  # sing-box فقط فایل می‌خونه؛ فایل چند ثانیه بعد از بالا اومدن حذف می‌شه
@@ -678,6 +715,8 @@ def live(c, xray, rounds, timeout, speed=False, secs=3.0):
                         c["flags"].add("tamper")
             except Exception:
                 pass
+            if sites:  # آیا یوتیوب و اینستاگرام و تلگرام واقعاً باز می‌شن؟
+                c["sites"] = site_check(port, min(timeout, 5))
             if speed:  # سرعت واقعی دانلود از داخل تونل (فقط روی نامزدهای نهایی)
                 k = measure_kbps(port, secs, 2, timeout)
                 if k:

@@ -13,10 +13,13 @@ DATA = Path(os.environ.get("CFG_DATA") or ROOT / "data")
 sys.path.insert(0, str(HERE))
 import cfgscan, cfgforge, report  # noqa: E402
 
+ANDROID = cfgscan.ANDROID  # CFG_ANDROID=1 را فقط پوسته‌ی اندروید تنظیم می‌کند
+
 SOCKS, HTTP, LOCK_PORT = 10808, 10809, 47831
 PREV, SRC_DB = DATA / "prev_proxy.json", DATA / "sources.json"
 S = dict(stage="idle", step=0, pct=0, msg="آماده‌ست", note="", log=[], connected=None, blocked=0, beat=time.time())
-BG, ASKING, DIRECT, CLOSING, QUITTING = [False], [False], [""], [0.0], [False]
+BG, ASKING, DIRECT, CLOSING, QUITTING = [ANDROID], [False], [""], [0.0], [False]  # اندروید: بسته‌شدن صفحه برنامه را نمی‌بندد
+VPN, VPN_WANT, _PORTS = [False], [True], [False]  # VPN: تونل فعاله؛ VPN_WANT: کاربر خواسته
 RUN, CUM, STATS_FILE = report.new_stats(), report.new_stats(), DATA / "stats.json"
 SETTINGS = DATA / "settings.json"
 STOP, XRAY_PROC, WIN, PORT, TOKEN, _lock, PIPE = threading.Event(), None, None, 0, "", None, None
@@ -226,7 +229,15 @@ def save_good(cs):
 
 
 # ------------------------------------------------------------ اتصال
+def _native(n):
+    d = os.environ.get("CFG_NATIVE_DIR")
+    p = Path(d) / n if d else None
+    return str(p) if p and p.is_file() else ""
+
+
 def find_singbox():
+    if ANDROID:
+        return _native("libsingbox.so")
     for n in ("sing-box.exe", "sing-box"):
         if (ROOT / "singbox" / n).is_file():
             return str(ROOT / "singbox" / n)
@@ -234,6 +245,8 @@ def find_singbox():
 
 
 def find_xray():
+    if ANDROID:
+        return _native("libxray.so")
     for n in ("xray.exe", "xray"):
         if (ROOT / "xray" / n).is_file():
             return str(ROOT / "xray" / n)
@@ -273,23 +286,23 @@ def ping_key(c):
     return c.get("lat") or 99999
 
 
-def check(c, rounds=1, timeout=3, speed=False, secs=3.0):
+def check(c, rounds=1, timeout=3, speed=False, secs=3.0, sites=False):
     """تست واقعی یه کانفیگ روی یه نمونه‌ی جدا از xray (روی یه کپی تا اصل خراب نشه)."""
     cc = dict(c)
     cc["flags"] = set(c["flags"])
     try:
-        cfgscan.live(cc, find_xray(), rounds, timeout, speed, secs)
+        cfgscan.live(cc, find_xray(), rounds, timeout, speed, secs, sites)
     except Exception:
         cc["alive"] = False
     cc["verified_at"] = time.time()
     return cc
 
 
-def check_many(cs, rounds=1, timeout=3, workers=8, speed=False, secs=3.0):
+def check_many(cs, rounds=1, timeout=3, workers=8, speed=False, secs=3.0, sites=False):
     if not cs:
         return []
     with ThreadPoolExecutor(max_workers=min(workers, len(cs))) as ex:
-        return list(ex.map(lambda c: check(c, rounds, timeout, speed, secs), cs))
+        return list(ex.map(lambda c: check(c, rounds, timeout, speed, secs, sites), cs))
 
 
 MODE = ["stable"]
@@ -360,6 +373,13 @@ def port_free(p):
 def ensure_ports():
     """اگه پورت‌های پیش‌فرض اشغالن (مثلاً xray یتیمِ دفعه‌ی قبل یا برنامه‌ی دیگه)، پورت آزاد انتخاب می‌کنه."""
     global SOCKS, HTTP
+    if ANDROID and not _PORTS[0]:  # پورت‌های ثابت را برنامه‌های دیگه برای تشخیص VPN اسکن می‌کنن؛ تصادفی
+        _PORTS[0] = True
+        for _ in range(60):
+            b = random.randrange(20000, 60000, 2)
+            if port_free(b) and port_free(b + 1):
+                SOCKS, HTTP = b, b + 1
+                return
     if not (port_free(SOCKS) and port_free(HTTP)):
         for base in range(10810, 10990, 2):
             if port_free(base) and port_free(base + 1):
@@ -576,8 +596,10 @@ def _failover(gen, profile, sysproxy, mode):
             POOL["standby"] = [x for x in rest if id(x) not in tried]
             set_active(sel, ms)
             POOL["switches"] += 1
+            POOL["sites"] = None
             save_good(sel)
             S.update(msg="وصل شدی ✓", note=f"جابه‌جایی خودکار انجام شد ({time.time() - t0:.1f} ثانیه)")
+            threading.Thread(target=sites_guard, args=(gen, profile, []), daemon=True).start()
             return
         bad[(c["host"], c["port"])] = time.time() + 600
     tried.clear()
@@ -597,8 +619,10 @@ def _failover(gen, profile, sysproxy, mode):
             POOL["standby"] = [c for c in rest if id(c) not in tried] + [g for g in good if g not in sel]
             set_active(sel, ms)
             POOL["switches"] += 1
+            POOL["sites"] = None
             save_good(sel)
             S.update(msg="وصل شدی ✓", note=f"جابه‌جایی خودکار انجام شد ({time.time() - t0:.1f} ثانیه)")
+            threading.Thread(target=sites_guard, args=(gen, profile, []), daemon=True).start()
             return
         for g in good[:1]:
             bad[(g["host"], g["port"])] = time.time() + 600
@@ -759,6 +783,81 @@ PREFETCH_RUNNING = [False]  # فقط اگه به‌روزرسانی اولیه �
 PREFETCH_EVT = threading.Event()  # بعد از تموم‌شدن به‌روزرسانی اولیه‌ی منابع (یا اگه شروع نشد) set می‌شه
 
 
+FETCHINFO = {"t": 0, "n": 0, "ok": 0, "total": 0}  # آخرین دریافت منابع (برای نمایش «همه‌چیز به‌روزه»)
+
+
+def record_fetch(stats, n):
+    """نتیجه‌ی دریافت هر منبع (تعداد، زمان آخرین موفقیت، علت خطا) رو ذخیره می‌کنه تا توی صفحه دیده بشه."""
+    try:
+        db = load_db()
+        now, ok = int(time.time()), 0
+        for x in db["sources"]:
+            st = stats.get(x["url"])
+            if not st:
+                continue
+            x["got"], x["err"] = st["got"], st.get("err", "")
+            if st["got"]:
+                x["last_ok"] = now
+                ok += 1
+        save_db(db)
+        FETCHINFO.update(t=now, n=n, ok=ok, total=len(stats))
+    except Exception:
+        pass
+
+
+def sites_ok(c):
+    s = c.get("sites") or {}
+    return bool(s.get("yt") and s.get("ig"))
+
+
+def sites_guard(gen, profile, found):
+    """بعد از اتصال: اگه سرور فعلی یوتیوب یا اینستاگرام رو باز نمی‌کنه، بقیه‌ی سرورهای سالم رو امتحان می‌کنه و به اولین سروری که هر دو رو باز می‌کنه می‌ره."""
+    try:
+        time.sleep(1.5)
+        if GEN[0] != gen or STOP.is_set() or not POOL["active"]:
+            return
+        r = cfgscan.site_check(SOCKS, 5)
+        POOL["sites"] = r
+        if r["yt"] and r["ig"]:
+            return
+        S["note"] = "این سرور یوتیوب یا اینستاگرام رو باز نمی‌کنه؛ دارم سرور بهتر پیدا می‌کنم ..."
+        tried = {POOL["active"][0]["raw"]}
+        t_end = time.time() + 150
+        while time.time() < t_end and GEN[0] == gen and not STOP.is_set():
+            uniq = {}
+            for c in list(found) + list(POOL["standby"]):
+                if c["raw"] not in tried and not danger(c):
+                    uniq.setdefault(c["raw"], c)
+            cand = sorted(uniq.values(), key=rk)[:4]
+            if not cand:
+                time.sleep(3)
+                continue
+            tried.update(c["raw"] for c in cand)
+            good = [x for x in check_many(cand, 1, 5, 4, sites=True) if solid(x) and sites_ok(x)]
+            if not good:
+                continue
+            best = sorted(good, key=rk)[0]
+            with SWITCH:
+                if GEN[0] != gen or STOP.is_set():
+                    return
+                prev = list(POOL["active"])
+                sel = start_xray([best], profile)
+                ms = probe_retry(2, 3)
+                if ms:
+                    set_active(sel, ms)
+                    POOL["switches"] += 1
+                    POOL["sites"] = best["sites"]
+                    save_good(sel)
+                    S.update(msg="وصل شدی ✓", note="به سروری وصل شدی که یوتیوب و اینستاگرام رو باز می‌کنه")
+                    return
+                start_xray(prev, profile)
+        if GEN[0] == gen and not STOP.is_set():
+            S["note"] = ("هیچ‌کدوم از سرورهای تست‌شده یوتیوب و اینستاگرام رو باز نکرد؛ وصلی ولی این سایت‌ها شاید باز نشن. "
+                         "چند دقیقه بعد دوباره اسکن کن.")
+    except Exception:
+        pass
+
+
 def probe_robust(timeout=3.0):
     """تست سلامت تونل با دو آدرس مختلف و تایم‌اوت بلندتر؛ یه کندی لحظه‌ای نباید به‌عنوان قطع حساب بشه."""
     for u in random.sample(PROBES, min(2, len(PROBES))):
@@ -811,6 +910,7 @@ def startup_refresh():
             say(f"منابع به‌روز شد: {len(links)} کانفیگ تازه.")
         else:
             say(f"به‌روزرسانی منابع ناموفق بود ({cfgscan.why_text(stats)}). موقع جستجو دوباره امتحان می‌شه.")
+        record_fetch(stats, len(links))
         tb.join(90)
     except Exception as e:
         say(f"خطا در به‌روزرسانی اولیه: {type(e).__name__}")
@@ -975,6 +1075,8 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
                     if s["url"] in stats:
                         s["got"], s["alive"] = stats[s["url"]]["got"], 0
                 fst["n"] = len(links)
+                if stats and stats is not PREFETCH["stats"]:
+                    record_fetch(stats, len(links))
                 if links:
                     random.shuffle(links)
                     if len(links) >= 50:
@@ -1064,7 +1166,7 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
                 set_proxy(HTTP)
             real = direct_ip()
             leak = "unknown" if not (real and ip) else ("leak" if ip == real else "ok")
-            POOL.update(active=sel, standby=[c for c in found if c["raw"] != sel[0]["raw"]][:40], switches=0, real_ip=real)
+            POOL.update(active=sel, standby=[c for c in found if c["raw"] != sel[0]["raw"]][:40], switches=0, real_ip=real, sites=None)
             connected[0], t_first[0] = True, time.time()
             save_good(sel)
             S.update(stage="connected", pct=100, msg="وصل شدی ✓", connected=dict(
@@ -1075,6 +1177,7 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
             MODE[0] = mode  # نظارت از همین لحظه فعاله؛ منتظر تموم‌شدن جستجو نمی‌مونه
             FAILOVER.set() if failover_on else FAILOVER.clear()
             threading.Thread(target=supervisor, args=(GEN[0], profile, sysproxy, mode), daemon=True).start()
+            threading.Thread(target=sites_guard, args=(GEN[0], profile, found), daemon=True).start()
 
         finished, why = 0, ""
         while not STOP.is_set():
@@ -1143,7 +1246,12 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
             for s in db["sources"]:
                 if c["raw"] in origin and s["url"] == origin[c["raw"]]:
                     s["alive"] += 1
-        save_db(db)
+        fresh = load_db()  # منبعی که وسط جستجو اضافه یا حذف شده از بین نره
+        idx = {x["url"]: x for x in fresh["sources"]}
+        for x in db["sources"]:
+            if x["url"] in idx:
+                idx[x["url"]].update(got=x.get("got", 0), alive=x.get("alive", 0))
+        save_db(fresh)
         if (not connected[0] and not STOP.is_set() and cycle < 8
                 and not (P["only_encrypted"] and fst["n"] and not tested)):
             nxt = 2 if level >= 3 else level + 1  # هیچ‌وقت تسلیم نمی‌شه: مرحله‌ی بعد، بعد از کمی صبر دوباره از مرحله‌ی ۲
@@ -1241,6 +1349,8 @@ def state():
     d["log"] = S["log"][-25:]
     d["sources"] = load_db()["sources"]
     d["win"] = os.name == "nt"
+    d["android"], d["vpn"] = ANDROID, VPN[0]
+    d["sites"], d["fetch"] = POOL.get("sites"), FETCHINFO
     d["cdp"] = CDP[0]
     d["methods"] = report.table(RUN["methods"], 8)
     d["rsum"] = {k: RUN[k] for k in ("tested", "reach", "alive", "blocked")}
@@ -1348,6 +1458,7 @@ class H(http.server.BaseHTTPRequestHandler):
         if p == "/api/start":
             global PIPE
             DIRECT[0] = j.get("direct") if j.get("direct") in cfgforge.COUNTRY_DIRECT else ""
+            VPN_WANT[0] = bool(j.get("sysproxy", True))
             if j.get("speed") in SPEEDS:
                 SPEED[0] = j["speed"]
             if PIPE and PIPE.is_alive():
@@ -1402,9 +1513,15 @@ class H(http.server.BaseHTTPRequestHandler):
                 why = (f"علت: {cfgscan.why_text(stats)}." if errs else
                        "توی پیام‌های اخیرش کانفیگی نبود یا کانال «پیش‌نمایش عمومی» نداره.")
                 return self.reply(200, {"ok": False, "error": "چیزی پیدا نشد. " + why})
-            db["sources"].append({"url": url, "on": True, "got": len(links), "alive": 0, "kind": "channel"})
+            db["sources"].append({"url": url, "on": True, "got": len(links), "alive": 0, "kind": "channel", "last_ok": int(time.time())})
             save_db(db)
             return self.reply(200, {"ok": True, "found": len(links)})
+        elif p == "/api/sitecheck":  # تست دستی: از اتصال فعلی یوتیوب، اینستاگرام و تلگرام باز می‌شن؟
+            if S["stage"] != "connected":
+                return self.reply(200, {"ok": False, "error": "اول وصل شو."})
+            r = cfgscan.site_check(SOCKS, 6)
+            POOL["sites"] = r
+            return self.reply(200, {"ok": True, "sites": r})
         elif p == "/api/delsource":
             url = str(j.get("url", ""))
             db = load_db()
@@ -1584,6 +1701,8 @@ EMBEDDED = bool(os.environ.get("CFG_EMBEDDED"))  # پنجره‌ی خود لان
 
 def open_window(url):
     global WIN
+    if ANDROID:  # رابط داخل خود برنامه (WebView) است؛ آدرس/توکن هم لاگ نمی‌شود
+        return
     BG[0] = False
     if EMBEDDED:  # لانچر آدرس رو از این فایل می‌خونه و پنجره‌ی خودش رو می‌سازه
         BG[0] = True  # بسته‌شدن پنجره رو لانچر مدیریت می‌کنه، نه تایمر
@@ -1703,6 +1822,8 @@ def main():
     DATA.mkdir(parents=True, exist_ok=True)
     try:  # xray یتیمِ دفعه‌ی قبل (اگه برنامه ناگهانی بسته شده) پورت رو اشغال نکنه
         pid = int((DATA / "xray.pid").read_text(encoding="utf-8").strip())
+        if ANDROID and not any(k in Path(f"/proc/{pid}/cmdline").read_bytes() for k in (b"libxray", b"libsingbox")):
+            raise OSError("not ours")  # شناسه‌ی فرایند عوض شده؛ چیز دیگه‌ای رو نکش
         if os.name == "nt":
             subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True, creationflags=0x08000000)
         else:
@@ -1715,7 +1836,8 @@ def main():
     restore_proxy()  # اگه دفعه‌ی قبل ناگهانی بسته شده بود، تنظیم قبلی پروکسی برمی‌گرده
     _lock = socket.socket()
     try:
-        _lock.bind(("127.0.0.1", LOCK_PORT))
+        if not ANDROID:
+            _lock.bind(("127.0.0.1", LOCK_PORT))
     except OSError:  # نسخه‌ی دیگه‌ای در حال اجراست؛ همون پنجره رو دوباره باز کن
         try:
             open_window(json.loads((DATA / "run.json").read_text(encoding="utf-8"))["url"])
