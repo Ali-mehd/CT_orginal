@@ -1,0 +1,9 @@
+build/
+dist/
+launcher/payload.zip
+launcher/*.syso
+launcher/alt.mod
+launcher/alt.sum
+data/
+__pycache__/
+*.pyc
