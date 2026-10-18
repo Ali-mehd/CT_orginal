@@ -533,7 +533,7 @@ def direct_ip():
 
 def describe(c):
     return dict(kbps=c.get("kbps"), host=c["host"][:24], proto=c["proto"], network=c["network"], security=c["security"],
-                port=c["port"], ping=c.get("tcp_ms") or c.get("lat"),
+                port=c["port"], ping=c.get("tcp_ms") or c.get("lat"), sites=c.get("sites") or None,
                 warn=sorted({cfgscan.FLAGS[f][0] for f in c["flags"] if cfgscan.FLAGS[f][2] != "info"}))
 
 
@@ -551,6 +551,8 @@ def refresh_standby(gen):
         if r is None:
             keep.append(c)
         elif solid(r, 0.5):
+            if "sites" in c:
+                r["sites"] = c["sites"]
             keep.append(r)
     POOL["standby"] = sorted(keep, key=eff)
 
@@ -579,13 +581,13 @@ def _failover(gen, profile, sysproxy, mode):
         bad[(c["host"], c["port"])] = time.time() + 600  # تا ۱۰ دقیقه برنمی‌گرده سراغش
     rest = [c for c in POOL["standby"] if c.get("strikes", 0) < 2 and bad.get((c["host"], c["port"]), 0) < time.time()]
     fresh = time.time() - 90
-    rest.sort(key=lambda c: (c.get("verified_at", 0) < fresh, -(c.get("success") or 0), eff(c)))
+    rest.sort(key=lambda c: (not sites_ok(c), c.get("verified_at", 0) < fresh, -(c.get("success") or 0), eff(c)))
     tried = set()
     for _ in range(3):  # مسیر سریع: جایگزینی که همین چند ثانیه‌ی پیش کاملاً سالم بوده؛ سلامتش بعد از اتصال دوباره با ترافیک واقعی چک می‌شه
         if GEN[0] != gen or STOP.is_set():
             return
         fastc = sorted([c for c in rest if id(c) not in tried and c.get("verified_at", 0) > time.time() - 45
-                        and (c.get("success") or 0) >= 0.99 and not danger(c)], key=rk)
+                        and (c.get("success") or 0) >= 0.99 and not danger(c) and sites_ok(c)], key=rk)
         if not fastc:
             break
         c = fastc[0]
@@ -808,13 +810,16 @@ def record_fetch(stats, n):
 SITE_FA = {"yt": "یوتیوب", "ig": "اینستاگرام", "tg": "تلگرام"}
 
 
+FULL, ACCEPT = 15, 12  # کامل: هر سه سایت | قابل‌قبول: یوتیوب + اینستاگرام (تلگرام به‌تنهایی کافی نیست)
+
+
 def sites_score(c):
     s = c.get("sites") or {}
-    return sum(1 for k in SITE_FA if s.get(k))
+    return 10 * bool(s.get("yt") and s.get("ig")) + 3 * bool(s.get("tg")) + bool(s.get("yt")) + bool(s.get("ig"))
 
 
 def sites_ok(c):
-    return sites_score(c) == len(SITE_FA)
+    return sites_score(c) >= ACCEPT
 
 
 def _closed(r):
@@ -855,12 +860,13 @@ def sites_guard(gen, profile, found):
             return
         r = cfgscan.site_check(SOCKS, 5)
         POOL["sites"] = r
-        cur = sum(1 for k in SITE_FA if r.get(k))
-        if cur == len(SITE_FA):
+        cur = sites_score({"sites": r})
+        if cur >= FULL:
             return
         tried = {POOL["active"][0]["raw"]}
         for rnd in range(3):
-            S["note"] = (f"این سرور {_closed(POOL['sites'])} رو باز نمی‌کنه؛ دارم سروری پیدا می‌کنم که همه‌شون رو باز کنه ..."
+            S["note"] = ((f"این سرور {_closed(POOL['sites'])} رو باز نمی‌کنه؛ دارم سروری پیدا می‌کنم که همه‌شون رو باز کنه ..."
+                          if cur < ACCEPT else f"یوتیوب و اینستاگرام باز هستن؛ دنبال سروری می‌گردم که {_closed(POOL['sites'])} هم باز کنه ...")
                          if rnd == 0 else f"هنوز دنبال سروری می‌گردم که {_closed(POOL['sites'])} رو هم باز کنه (دور {rnd + 1} از ۳) ...")
             t_end = time.time() + (75 if rnd == 0 else 60)
             while time.time() < t_end and GEN[0] == gen and not STOP.is_set():
@@ -888,7 +894,7 @@ def sites_guard(gen, profile, found):
                     POOL["sites"] = best["sites"]
                     save_good(sel)
                     cur = sites_score(best)
-                if cur == len(SITE_FA):
+                if cur >= FULL:
                     S.update(msg="وصل شدی ✓", note="به سروری وصل شدی که یوتیوب، اینستاگرام و تلگرام رو باز می‌کنه")
                     return
                 S.update(msg="وصل شدی ✓", note=f"بهترین سرور تا الان: {_closed(POOL['sites'])} باز نمی‌شه؛ ادامه می‌دم ...")
@@ -900,6 +906,28 @@ def sites_guard(gen, profile, found):
         if GEN[0] == gen and not STOP.is_set():
             S["note"] = (f"بین سرورهای تست‌شده هیچ‌کدوم {_closed(POOL['sites'])} رو باز نکرد؛ بهترین‌شون فعاله. "
                          "این معمولاً یعنی لیست رایگان فعلی خوب نیست؛ چند ساعت بعد دوباره اسکن کن.")
+    except Exception:
+        pass
+
+
+def standby_sites(gen):
+    """جایگزین‌های آماده (بخش «سرورها») رو در پس‌زمینه از نظر یوتیوب و اینستاگرام تست می‌کنه؛
+    اونایی که باز نمی‌کنن از لیست جایگزین‌ها حذف می‌شن تا جابه‌جایی خودکار هیچ‌وقت به سرور بی‌فایده نپره."""
+    try:
+        while GEN[0] == gen and not STOP.is_set():
+            todo = [c for c in list(POOL["standby"]) if "sites" not in c][:6]
+            if not todo:
+                time.sleep(5)
+                continue
+            for o, r in zip(todo, check_many(todo, 1, 5, 6, sites=True)):
+                if r.get("alive") and sites_score(r) >= ACCEPT:
+                    o["sites"] = r["sites"]
+                else:
+                    o["sites"] = {}
+                    try:
+                        POOL["standby"].remove(o)
+                    except ValueError:
+                        pass
     except Exception:
         pass
 
@@ -1204,9 +1232,21 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
 
         conn = {"busy": False, "t_first": None}
 
-        def pick_first():
-            """نامزدهای اتصال اول. حالت «سرعت»: چند سرور سالم با سنجش واقعی سرعت، سریع‌ترین اول؛ بقیه‌ی حالت‌ها: اولین سالم."""
-            pool = sorted(list(found), key=ping_key)[:8]
+        site_cache = {}
+
+        def pick_first(partial=False):
+            """نامزدهای اتصال اول: فقط سرورهایی که یوتیوب و اینستاگرام رو واقعاً باز می‌کنن (تلگرام امتیاز اضافه‌ست).
+            اگه هنوز چنین سروری پیدا نشده برمی‌گرده خالی و منتظر سرورهای بعدی می‌مونه؛ فقط وقتی partial=True (زمان انتظار تموم شد)
+            به بهترین سرور موجود راضی می‌شه. حالت «سرعت»: بین همین‌ها سریع‌ترین."""
+            fresh = [c for c in sorted(list(found), key=ping_key) if c["raw"] not in site_cache][:8]
+            if fresh:
+                S.update(step=4, msg=f"تست دسترسی به یوتیوب، اینستاگرام و تلگرام روی {len(fresh)} سرور سالم ...")
+                for c, r in zip(fresh, check_many(fresh, 1, 5, 8, sites=True)):
+                    site_cache[c["raw"]] = r
+            live_ = [r for r in site_cache.values() if r.get("alive") and not danger(r)]
+            pool = sorted([r for r in live_ if sites_ok(r)], key=lambda r: (-sites_score(r), ping_key(r)))[:8]
+            if not pool and partial:
+                pool = sorted(live_, key=lambda r: (-sites_score(r), ping_key(r)))[:8] or sorted(list(found), key=ping_key)[:1]
             if profile == "speed" and len(pool) > 1:
                 S.update(step=4, msg=f"در حال سنجش سرعت {len(pool)} سرور سالم ...")
                 ver = check_many(pool, 1, 5, 3, speed=True, secs=2.0)  # هم‌زمانی کم تا اندازه‌گیری‌ها قابل مقایسه بمونن
@@ -1237,9 +1277,11 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
             S.update(step=4, msg=("در حال انتخاب سریع‌ترین سرور ..." if profile == "speed"
                                   else "اولین سرور سالم پیدا شد؛ در حال اتصال ..."))
 
+            partial = force or bool(conn["t_first"] and time.time() - conn["t_first"] > 60)
+
             def run():
                 try:
-                    try_connect()
+                    try_connect(partial)
                 except Exception:
                     fails[0] += 1
                 finally:
@@ -1248,8 +1290,11 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
                         S.update(step=2, msg=f"ادامه‌ی جستجو ... ({len(found)} سرور سالم پیدا شده)")
             threading.Thread(target=run, daemon=True).start()
 
-        def try_connect():
-            res = connect_ladder(pick_first(), profile, 1)
+        def try_connect(partial=False):
+            cands = pick_first(partial)
+            if not cands:
+                return  # هنوز سروری که یوتیوب و اینستاگرام رو باز کنه پیدا نشده؛ اتصال به سرور بی‌فایده انجام نمی‌شه
+            res = connect_ladder(cands, profile, 1)
             if not res:
                 fails[0] += 1
                 return
@@ -1265,7 +1310,13 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
                 set_proxy(HTTP)
             real = direct_ip()
             leak = "unknown" if not (real and ip) else ("leak" if ip == real else "ok")
-            POOL.update(active=sel, standby=[c for c in found if c["raw"] != sel[0]["raw"]][:40], switches=0, real_ip=real, sites=None)
+            okset = {k for k, r in site_cache.items() if sites_ok(r)}
+            POOL.update(active=sel, standby=sorted([c for c in found if c["raw"] != sel[0]["raw"] and (c["raw"] in okset or c["raw"] not in site_cache)],
+                                                   key=lambda c: c["raw"] not in okset)[:40],
+                        switches=0, real_ip=real, sites=sel[0].get("sites"))
+            for c in POOL["standby"]:
+                if c["raw"] in okset:
+                    c["sites"] = site_cache[c["raw"]]["sites"]
             connected[0], t_first[0] = True, time.time()
             save_good(sel)
             S.update(stage="connected", pct=100, msg="وصل شدی ✓", connected=dict(
@@ -1277,6 +1328,7 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
             FAILOVER.set() if failover_on else FAILOVER.clear()
             threading.Thread(target=supervisor, args=(GEN[0], profile, sysproxy, mode), daemon=True).start()
             threading.Thread(target=sites_guard, args=(GEN[0], profile, found), daemon=True).start()
+            threading.Thread(target=standby_sites, args=(GEN[0],), daemon=True).start()
 
         finished, why = 0, ""
         while not STOP.is_set():
@@ -1508,6 +1560,9 @@ class H(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
         for k, v in (headers or {}).items():
             self.send_header(k, v)
         self.end_headers()
@@ -1530,14 +1585,20 @@ class H(http.server.BaseHTTPRequestHandler):
         if not self.auth(q):
             return self.reply(403, b"", "text/plain")
         if u.path == "/":
-            html = (HERE / "ui.html").read_text(encoding="utf-8").replace("__T__", TOKEN)
-            return self.reply(200, html.encode(), "text/html; charset=utf-8")
+            nonce = secrets.token_urlsafe(12)  # فقط اسکریپت خودِ برنامه اجرا بشه؛ حتی اگه یه روز محتوای تزریقی به صفحه برسه نمی‌تونه کد اجرا کنه یا چیزی بیرون بفرسته
+            html = ((HERE / "ui.html").read_text(encoding="utf-8").replace("__T__", TOKEN)
+                    .replace("<script>", f'<script nonce="{nonce}">', 1))
+            csp = (f"default-src 'none'; script-src 'nonce-{nonce}'; style-src 'unsafe-inline'; img-src 'self' data:; "
+                   "connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'")
+            return self.reply(200, html.encode(), "text/html; charset=utf-8", {"Content-Security-Policy": csp})
         if u.path == "/api/state":
             S["beat"] = time.time()
             return self.reply(200, state())
         if u.path == "/report":
-            hdr = ({"Content-Disposition": 'attachment; filename="network-report-%s.html"' % time.strftime("%Y%m%d-%H%M")}
-                   if q.get("dl") else None)
+            hdr = {"Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; "
+                                              "form-action 'none'; frame-ancestors 'none'"}
+            if q.get("dl"):
+                hdr["Content-Disposition"] = 'attachment; filename="network-report-%s.html"' % time.strftime("%Y%m%d-%H%M")
             return self.reply(200, report.render(RUN, CUM).encode("utf-8"), "text/html; charset=utf-8", hdr)
         self.reply(404, b"", "text/plain")
 

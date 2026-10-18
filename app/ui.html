@@ -74,7 +74,7 @@ ol{padding-right:18px;margin:4px 0}
 
 <div class="card">
  <div class="tabs" id="tabs"></div>
- <div class="pane" data-p="srv"><p class="m" id="sw" style="margin-top:0"></p><div id="servers"></div><p class="m">«فعال» الان استفاده می‌شه و «آماده» جایگزین تست‌شده‌ست. پینگ و سرعت مال آخرین تسته.</p></div>
+ <div class="pane" data-p="srv"><p class="m" id="sw" style="margin-top:0"></p><div id="servers"></div><p class="m">«فعال» الان استفاده می‌شه. «آماده» جایگزین‌هاییه که تست شدن و یوتیوب و اینستاگرام رو باز می‌کنن؛ اگه سرور فعال قطع یا ضعیف شد، برنامه خودش فوری به یکی از اینا می‌پره. سرورهایی که یوتیوب و اینستاگرام رو باز نکنن اینجا نگه داشته نمی‌شن. پینگ و سرعت مال آخرین تسته.</p></div>
  <div class="pane" data-p="an"><div id="rsum" class="m" style="margin-top:0">هنوز اسکنی انجام نشده.</div><div id="methods"></div>
   <p class="m">«کارکرده» یعنی ترافیک واقعی ازش رد شد و مشکل امنیتی دیده نشد. سرورهای فهرست سیاه اصلاً تست نمی‌شن.</p>
   <a class="btn" id="dl" download style="text-decoration:none;display:inline-block">ذخیره‌ی فایل گزارش</a><a class="btn" id="vw" target="_blank" style="text-decoration:none;display:inline-block">مشاهده‌ی گزارش</a>
@@ -136,7 +136,7 @@ function render(s){S=s;const st=s.stage,c=s.connected;
  once("upd",[s.fetch,s.sources],()=>{const b=$("updln");b.textContent="";const f=s.fetch||{};if(!f.t){b.textContent="منابع: هنوز دریافت نشده";return}if(!f.n){b.textContent="منابع: دریافت ناموفق بود (۰ کانفیگ)؛ از لیست ذخیره‌شده‌ی قبلی استفاده می‌شه.";b.style.color="var(--bad,#ff8a80)";return}b.style.color="";const tm=new Date(f.t*1000).toLocaleTimeString("fa-IR",{hour:"2-digit",minute:"2-digit"});b.appendChild(el("span","منابع به‌روز شد ("+tm+"): "+f.n+" کانفیگ از "+f.ok+" منبع"));(s.sources||[]).filter(x=>x.kind=="channel").forEach(x=>{const e=el("span",(x.got?"✓ ":"✗ ")+x.url.replace("https://t.me/s/","@").replace("https://","")+(x.got?" ("+x.got+")":""));e.style.direction="ltr";e.style.display="inline-block";e.style.marginInline="6px";e.style.color=x.got?"var(--ok,#6fd08c)":"var(--bad,#ff8a80)";b.appendChild(e)})});
  once("srv",[s.servers,s.switches],()=>{const sv=$("servers");sv.textContent="";
   (s.servers||[]).forEach(x=>{const d=el("div",null,"kv");const a=el("span",(x.role=="active"?"● ":"○ ")+x.proto+"/"+x.network+"/"+x.security+":"+x.port);
-   d.append(a,el("span","پینگ "+(x.ping||"?")+" ms"+(x.kbps?" | "+(x.kbps/1000).toFixed(1)+" Mbps":"")));sv.appendChild(d)});
+   const T={yt:"یوتیوب",ig:"اینستاگرام",tg:"تلگرام"};d.append(a,el("span","پینگ "+(x.ping||"?")+" ms"+(x.kbps?" | "+(x.kbps/1000).toFixed(1)+" Mbps":"")+(x.sites?" | "+Object.keys(T).map(k=>(x.sites[k]?"✓ ":"✗ ")+T[k]).join(" "):"")));sv.appendChild(d)});
   $("sw").textContent="جابه‌جایی خودکار تا الان: "+(s.switches||0)+" بار"});
  once("mt",[s.methods,s.rsum],()=>{const r=s.rsum||{},m=$("methods");m.textContent="";
   $("rsum").textContent=r.tested?("تست‌شده: "+r.tested+" | پاسخ‌دهنده: "+r.reach+" | کارکرده: "+r.alive+(r.blocked?" | رد‌شده با فهرست سیاه: "+r.blocked:"")+(r.runs_total>1?" | کل اجراها: "+r.runs_total:"")):"هنوز اسکنی انجام نشده.";
