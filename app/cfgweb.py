@@ -504,8 +504,6 @@ def connect_ladder(cands, profile, pool_size):
             return sel, ms, plain
         if pool and pool[0]["proto"] in cfgscan.SB_PROTOS:
             break  # برای موتور دوم حالت ساده/کامل معنی نداره
-        if len(pool) == 1 and plain is False and profile in ("stream", "gaming", "download"):
-            continue
     for c in cands[:5]:  # سرور به سرور، ساده‌ترین حالت
         if STOP.is_set():
             return None
@@ -713,7 +711,8 @@ def refill(gen, profile, seen):
                         continue
                     seen.add(l)
                     c = cfgscan.parse(l)
-                    if c:
+                    if c and cfgscan.ckey(c) not in seen:  # همان سرور با اسم دیگه دوباره تست نشه
+                        seen.add(cfgscan.ckey(c))
                         cfgscan.static(c)
                         if not ("unsupported" in c["flags"] or "private_addr" in c["flags"] or danger(c)
                                 or not usable(c, P["only_encrypted"])
@@ -976,7 +975,8 @@ def channels_retry(gen, profile, seen):
                     continue
                 seen.add(l)
                 c = cfgscan.parse(l)
-                if c:
+                if c and cfgscan.ckey(c) not in seen:
+                    seen.add(cfgscan.ckey(c))
                     cfgscan.static(c)
                     if not ("unsupported" in c["flags"] or "private_addr" in c["flags"] or danger(c)
                             or not usable(c, P["only_encrypted"]) or (P["only_encrypted"] and c["flags"] & STRICT_BAD)):
@@ -1131,6 +1131,10 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
                 c = cfgscan.parse(l)
                 if not c:
                     continue
+                k = cfgscan.ckey(c)  # همان سرور با #remark یا ترتیب پارامتر متفاوت، دوباره تست نشه
+                if k in seen:
+                    continue
+                seen.add(k)
                 cfgscan.static(c)
                 c["src"] = tag
                 if "blocklisted" in c["flags"]:
@@ -1546,6 +1550,9 @@ def shutdown():
                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
 
+MAX_BODY = 8_000_000  # بزرگ‌ترین بدنه‌ی POST (افزودن دستی تا ۲ میلیون کاراکتر فارسی/یونیکد قبول می‌کنه)
+
+
 class H(http.server.BaseHTTPRequestHandler):
     timeout = 10  # اتصال نیمه‌باز (slowloris) بعد از ۱۰ ثانیه بسته می‌شه
 
@@ -1610,7 +1617,9 @@ class H(http.server.BaseHTTPRequestHandler):
             n = int(self.headers.get("Content-Length", 0))
             if n < 0:
                 raise ValueError("negative length")
-            j = json.loads(self.rfile.read(min(n, 10000)) or b"{}")
+            if n > MAX_BODY:  # قبلاً بدنه بی‌صدا بریده می‌شد و JSON خراب می‌شد؛ حالا صریح رد می‌شه
+                return self.reply(413, {"error": "big"})
+            j = json.loads(self.rfile.read(n) or b"{}")
             if not isinstance(j, dict):
                 raise ValueError("not an object")
         except Exception:
@@ -1650,13 +1659,25 @@ class H(http.server.BaseHTTPRequestHandler):
                     pass
             S.update(stage="idle", step=0, pct=0, msg="نتایج پاک شد", connected=None, log=[])
         elif p == "/api/import":
-            ls = cfgscan.extract_links(str(j.get("text", ""))[:2_000_000])
+            text = str(j.get("text", ""))[:2_000_000]
+            ls = cfgscan.extract_links(text)
+            urls = cfgscan.sub_urls(text, ls)  # لینک ساب‌اسکریپشن (https) هم قبول می‌شه؛ یک بار دریافت و کانفیگ‌هاش ذخیره می‌شه
+            if urls:
+                ca = HERE / "cacert.pem"
+                if ca.is_file():
+                    cfgscan.CA_FILE = str(ca)
+                got, _ = cfgscan.fetch_sources(urls, per_source=2500, log=lambda m: None, deadline=30,
+                                               proxy_port=HTTP if XRAY_PROC else None)
+                ls = ls + got
             ls = [l for l in dict.fromkeys(ls) if cfgscan.parse(l)]
             if ls:
                 DATA.mkdir(parents=True, exist_ok=True)
                 cp = DATA / "custom.txt"
                 write_secret(cp, "\n".join(list(dict.fromkeys(ls + read_links(cp)))[:3000]) + "\n")
-            return self.reply(200, {"ok": True, "added": len(ls)})
+            res = {"ok": True, "added": len(ls), "urls": len(urls)}
+            if not ls and not urls and re.search(r"http://\S", text):
+                res["error"] = "http"  # fetch_sources عمداً فقط https می‌گیره
+            return self.reply(200, res)
         elif p == "/api/addsource":  # کانال/گروه عمومی پیام‌رسان به‌عنوان منبع کانفیگ
             url, kind = cfgscan.normalize_channel(str(j.get("text", "")))
             if not url:

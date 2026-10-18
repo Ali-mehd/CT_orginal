@@ -68,9 +68,21 @@ def mk(**kw):
     d = dict(proto="", host="", port=0, id="", pw="", method="", aid=0, scy="auto",
              network="tcp", security="none", sni="", hosthdr="", path="", svc="",
              flow="", pbk="", sid="", fp="", alpn="", insecure=False, name="", plugin=False,
-             mode="", extra="", frag=False, obfs="", obfspw="", cc="", urm="")
+             mode="", extra="", frag=False, obfs="", obfspw="", cc="", urm="", hdr="", ech="", enc="")
     d.update(kw)
     return d
+
+
+# هر چیزی که روی ساخت کانفیگ اتصال اثر داره؛ دو لینک با همین مقدارها یک سرور واقعی‌ان (اسم و ترتیب پارامترها فرق نمی‌کنه)
+KEY_FIELDS = ("proto", "host", "port", "id", "pw", "method", "aid", "scy", "network", "security", "sni", "hosthdr", "path",
+              "svc", "flow", "pbk", "sid", "fp", "alpn", "insecure", "mode", "extra", "obfs", "obfspw", "cc", "urm",
+              "hdr", "ech", "enc")
+_CI = {"host", "id", "sni", "hosthdr"}  # نام دامنه و UUID به حروف حساس نیستن (رمز و مسیر هستن)
+
+
+def ckey(c):
+    """کلید یکتای سرور برای حذف تکراری‌ها؛ فقط #remark یا ترتیب پارامترها فرق داشته باشه یعنی تکراریه."""
+    return tuple(str(c[k]).lower() if k in _CI else c[k] for k in KEY_FIELDS)
 
 
 def p_vmess(link):
@@ -81,6 +93,7 @@ def p_vmess(link):
               security="tls" if j.get("tls") == "tls" else "none",
               sni=clean(j.get("sni")), hosthdr=clean(j.get("host")), path=clean(j.get("path"), 512),
               svc=clean(j.get("path"), 128), fp=clean(j.get("fp"), 30), alpn=clean(j.get("alpn"), 60),
+              hdr=clean(j.get("type"), 20).lower(),
               insecure=str(j.get("allowInsecure", "")).lower() in ("1", "true"), name=clean(j.get("ps"), 80))
 
 
@@ -96,6 +109,8 @@ def p_url(link, sch):
               path=clean(urllib.parse.unquote(q.get("path", "")), 512), svc=clean(q.get("serviceName"), 128),
               flow=clean(q.get("flow"), 40), mode=clean(q.get("mode"), 20), extra=clean(q.get("extra"), 2000), pbk=clean(q.get("pbk"), 100), sid=clean(q.get("sid"), 40),
               fp=clean(q.get("fp"), 30), alpn=clean(q.get("alpn"), 60),
+              hdr=clean(q.get("headerType"), 20).lower(), ech=clean(q.get("ech") or q.get("echConfigList"), 2000),
+              enc=clean(q.get("encryption"), 2000),
               insecure=q.get("allowInsecure", q.get("insecure", "")).lower() in ("1", "true"),
               name=clean(urllib.parse.unquote(u.fragment), 80))
 
@@ -126,10 +141,20 @@ def _q(link):
     return u, {k: v[0] for k, v in urllib.parse.parse_qs(u.query).items()}
 
 
+def _port(u):
+    """پورت اول آدرس. hysteria2 گاهی فهرست یا بازه می‌ده (host:443,5000-6000) و u.port روی اون خطا می‌ده."""
+    try:
+        return u.port
+    except ValueError:
+        tail = u.netloc.rsplit("@", 1)[-1].rpartition("]")[2]
+        m = re.match(r"\d+", tail.partition(":")[2]) if ":" in tail else None
+        return int(m.group()) if m else 0
+
+
 def p_hy2(link):
     u, q = _q(link)
     pw = urllib.parse.unquote(u.username or "") + (":" + urllib.parse.unquote(u.password) if u.password else "")
-    return mk(proto="hysteria2", host=clean(u.hostname), port=u.port or 443, pw=clean(pw), security="tls",
+    return mk(proto="hysteria2", host=clean(u.hostname), port=_port(u) or 443, pw=clean(pw), security="tls",
               network="quic", sni=clean(q.get("sni")), alpn=clean(q.get("alpn"), 40),
               insecure=q.get("insecure", "").lower() in ("1", "true"), obfs=clean(q.get("obfs"), 20),
               obfspw=clean(q.get("obfs-password"), 100), name=clean(urllib.parse.unquote(u.fragment), 80))
@@ -182,6 +207,31 @@ def extract_links(text):
         return _links_in(b64d(text))
     except Exception:
         return []
+
+
+def sub_urls(text, links=()):
+    """آدرس‌های https توی متن (لینک ساب‌اسکریپشن یا کانال). آدرس‌هایی که داخل خود لینک کانفیگ‌هان (مثلاً توی remark) حساب نمی‌شن."""
+    rest = text
+    for l in links:
+        rest = rest.replace(l, " ")
+    found = (m.rstrip(".,;،") for m in re.findall(r"https://[^\s\"'<>]+", rest))
+    return list(dict.fromkeys(u for u in found if public_url(u)))[:5]
+
+
+def public_url(u):
+    """آدرس‌های داخلی (localhost، IP خصوصی، نام بدون نقطه) دریافت نمی‌شن. عمداً DNS حل نمی‌شه: DNS آلوده‌ی بعضی شبکه‌ها
+    آدرس‌های مسدودشده رو به IP خصوصی می‌بره و فقط مسیرهای کمکی (آینه، IP ثابت) به جواب می‌رسن."""
+    try:
+        h = (urllib.parse.urlsplit(u).hostname or "").lower()
+    except ValueError:
+        return False
+    if not h or h == "localhost" or h.endswith((".local", ".localhost", ".internal")):
+        return False
+    if is_ip(h):
+        ip = ipaddress.ip_address(h)
+        return not (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
+                    or ip.is_multicast or ip.is_unspecified)
+    return "." in h
 
 
 # ---------------------------------------------------------------- کانال و گروه‌های عمومی پیام‌رسان‌ها به‌عنوان منبع
@@ -369,7 +419,10 @@ def static(c):
     if c["proto"] in SB_PROTOS:
         if not SINGBOX:
             f.add("unsupported")
-    elif c["network"] not in NETS or c["security"] not in ("none", "tls", "reality") or c["plugin"]:
+    elif (c["network"] not in NETS or c["security"] not in ("none", "tls", "reality") or c["plugin"]
+          or c["ech"]  # ECH توی build_xray پیاده نشده؛ بدونش تست بی‌معنیه
+          or (c["network"] == "tcp" and c["hdr"] == "http")  # مبهم‌سازی HTTP روی TCP پیاده نشده
+          or (c["proto"] == "vless" and c["enc"] not in ("", "none"))):  # رمزنگاری vless (مثل mlkem) پیاده نشده
         f.add("unsupported")
     if c["security"] == "none" and c["proto"] != "ss" and c["proto"] not in SB_PROTOS:
         f.add("no_tls")
