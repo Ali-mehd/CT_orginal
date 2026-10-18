@@ -637,26 +637,65 @@ def measure_kbps(port, secs=3.0, streams=2, timeout=6, urls=None):
     return None
 
 
-SITES = {"yt": "https://www.youtube.com/generate_204", "ig": "https://www.instagram.com/robots.txt",
-         "tg": "https://telegram.org/robots.txt"}
+SITES = {"yt": "https://www.youtube.com/generate_204", "ig": "https://www.instagram.com/robots.txt"}
+TG_DCS = (("149.154.167.51", 443), ("149.154.167.91", 443), ("149.154.175.53", 443))  # سرورهای واقعی خود تلگرام (اپ تلگرام به اینا وصل می‌شه، نه به telegram.org)
+
+
+def tcp_via(port, ip, dport, timeout=5):
+    """از داخل تونل فقط یه اتصال TCP به IP مشخص می‌سازه (هیچ داده‌ای نمی‌فرسته)."""
+    s = socket.create_connection(("127.0.0.1", port), timeout=timeout)
+    try:
+        s.settimeout(timeout)
+        s.sendall(b"\x05\x01\x00")
+        if recvn(s, 2) != b"\x05\x00":
+            return False
+        s.sendall(b"\x05\x01\x00\x01" + socket.inet_aton(ip) + struct.pack(">H", dport))
+        return recvn(s, 4)[1] == 0
+    except Exception:
+        return False
+    finally:
+        s.close()
 
 
 def site_check(port, timeout=5):
-    """از داخل تونل: یوتیوب، اینستاگرام و تلگرام واقعاً می‌رسن؟ (هر پاسخ HTTP یعنی رسیده؛ فقط خطای شبکه و ۵xx یعنی نه)"""
+    """از داخل تونل: یوتیوب، اینستاگرام و تلگرام واقعاً می‌رسن؟
+    یوتیوب و اینستاگرام: هر پاسخ HTTP یعنی رسیده (فقط خطای شبکه و ۵xx یعنی نه). تلگرام: اتصال به سرورهای خود تلگرام باز بشه.
+    هر تست اگه بار اول شکست خورد یک بار دیگه با زمان بیشتر امتحان می‌شه تا کندیِ لحظه‌ای به‌حساب بسته‌بودن نیاد."""
     res = {}
 
-    def one(k, url):
+    def http_ok(url):
+        for t in (timeout, timeout + 3):
+            try:
+                st, _, _ = fetch(port, url, t)
+                if st < 500:
+                    return True
+            except Exception:
+                pass
+            time.sleep(0.4)
+        return False
+
+    def tg_ok():
+        for t in (timeout, timeout + 3):
+            for ip, dp in TG_DCS:
+                try:
+                    if tcp_via(port, ip, dp, t):
+                        return True
+                except Exception:
+                    pass
+        return False
+
+    def one(k, fn, *a):
         try:
-            st, _, _ = fetch(port, url, timeout)
-            res[k] = st < 500
+            res[k] = bool(fn(*a))
         except Exception:
             res[k] = False
-    ths = [threading.Thread(target=one, args=(k, u), daemon=True) for k, u in SITES.items()]
+    jobs = [("yt", http_ok, SITES["yt"]), ("ig", http_ok, SITES["ig"]), ("tg", tg_ok)]
+    ths = [threading.Thread(target=one, args=j, daemon=True) for j in jobs]
     for t in ths:
         t.start()
     for t in ths:
-        t.join(timeout + 1)
-    return {k: bool(res.get(k)) for k in SITES}
+        t.join(timeout * 4 + 8)
+    return {k: bool(res.get(k)) for k in ("yt", "ig", "tg")}
 
 
 def live(c, xray, rounds, timeout, speed=False, secs=3.0, sites=False):

@@ -805,55 +805,154 @@ def record_fetch(stats, n):
         pass
 
 
-def sites_ok(c):
+SITE_FA = {"yt": "یوتیوب", "ig": "اینستاگرام", "tg": "تلگرام"}
+
+
+def sites_score(c):
     s = c.get("sites") or {}
-    return bool(s.get("yt") and s.get("ig"))
+    return sum(1 for k in SITE_FA if s.get(k))
+
+
+def sites_ok(c):
+    return sites_score(c) == len(SITE_FA)
+
+
+def _closed(r):
+    return " و ".join(v for k, v in SITE_FA.items() if not (r or {}).get(k))
+
+
+def _pull_candidates(found, tried, n):
+    """نامزدهای تازه برای تست: اول سرورهای تست‌شده‌ی سالم، بعد (وقتی تموم شدن) از صف سرورهای هنوز تست‌نشده."""
+    uniq = {}
+    for c in list(found) + list(POOL["standby"]):
+        if c["raw"] not in tried and not danger(c):
+            uniq.setdefault(c["raw"], c)
+    cand = sorted(uniq.values(), key=rk)[:n]
+    if cand:
+        return cand
+    out = []
+    for _ in range(40):
+        if len(out) >= n:
+            break
+        try:
+            c = POOL["backlog"].pop(0)
+        except IndexError:
+            break
+        if c["raw"] in tried or danger(c):
+            continue
+        cfgscan.reach(c, 3)
+        if c.get("reachable"):
+            out.append(c)
+    return out
 
 
 def sites_guard(gen, profile, found):
-    """بعد از اتصال: اگه سرور فعلی یوتیوب یا اینستاگرام رو باز نمی‌کنه، بقیه‌ی سرورهای سالم رو امتحان می‌کنه و به اولین سروری که هر دو رو باز می‌کنه می‌ره."""
+    """بعد از اتصال: اگه سرور فعلی یوتیوب، اینستاگرام یا تلگرام رو باز نمی‌کنه، خودش دنبال سروری می‌گرده که همه‌شون رو باز کنه.
+    اگه چنین سروری پیدا نشد، سروری رو نگه می‌داره که بیشترین تعداد از این سه تا رو باز می‌کنه. چند دور تکرار می‌شه چون سرورهای تازه مدام اضافه می‌شن."""
     try:
         time.sleep(1.5)
         if GEN[0] != gen or STOP.is_set() or not POOL["active"]:
             return
         r = cfgscan.site_check(SOCKS, 5)
         POOL["sites"] = r
-        if r["yt"] and r["ig"]:
+        cur = sum(1 for k in SITE_FA if r.get(k))
+        if cur == len(SITE_FA):
             return
-        S["note"] = "این سرور یوتیوب یا اینستاگرام رو باز نمی‌کنه؛ دارم سرور بهتر پیدا می‌کنم ..."
         tried = {POOL["active"][0]["raw"]}
-        t_end = time.time() + 150
-        while time.time() < t_end and GEN[0] == gen and not STOP.is_set():
-            uniq = {}
-            for c in list(found) + list(POOL["standby"]):
-                if c["raw"] not in tried and not danger(c):
-                    uniq.setdefault(c["raw"], c)
-            cand = sorted(uniq.values(), key=rk)[:4]
-            if not cand:
-                time.sleep(3)
-                continue
-            tried.update(c["raw"] for c in cand)
-            good = [x for x in check_many(cand, 1, 5, 4, sites=True) if solid(x) and sites_ok(x)]
-            if not good:
-                continue
-            best = sorted(good, key=rk)[0]
-            with SWITCH:
-                if GEN[0] != gen or STOP.is_set():
-                    return
-                prev = list(POOL["active"])
-                sel = start_xray([best], profile)
-                ms = probe_retry(2, 3)
-                if ms:
+        for rnd in range(3):
+            S["note"] = (f"این سرور {_closed(POOL['sites'])} رو باز نمی‌کنه؛ دارم سروری پیدا می‌کنم که همه‌شون رو باز کنه ..."
+                         if rnd == 0 else f"هنوز دنبال سروری می‌گردم که {_closed(POOL['sites'])} رو هم باز کنه (دور {rnd + 1} از ۳) ...")
+            t_end = time.time() + (75 if rnd == 0 else 60)
+            while time.time() < t_end and GEN[0] == gen and not STOP.is_set():
+                cand = _pull_candidates(found, tried, 8)
+                if not cand:
+                    time.sleep(3)
+                    continue
+                tried.update(c["raw"] for c in cand)
+                good = [x for x in check_many(cand, 1, 5, 8, sites=True) if solid(x)]
+                good = [x for x in good if sites_score(x) > cur]
+                if not good:
+                    continue
+                best = sorted(good, key=lambda x: (-sites_score(x), rk(x)))[0]
+                with SWITCH:
+                    if GEN[0] != gen or STOP.is_set():
+                        return
+                    prev = list(POOL["active"])
+                    sel = start_xray([best], profile)
+                    ms = probe_retry(2, 3)
+                    if not ms:
+                        start_xray(prev, profile)
+                        continue
                     set_active(sel, ms)
                     POOL["switches"] += 1
                     POOL["sites"] = best["sites"]
                     save_good(sel)
-                    S.update(msg="وصل شدی ✓", note="به سروری وصل شدی که یوتیوب و اینستاگرام رو باز می‌کنه")
+                    cur = sites_score(best)
+                if cur == len(SITE_FA):
+                    S.update(msg="وصل شدی ✓", note="به سروری وصل شدی که یوتیوب، اینستاگرام و تلگرام رو باز می‌کنه")
                     return
-                start_xray(prev, profile)
+                S.update(msg="وصل شدی ✓", note=f"بهترین سرور تا الان: {_closed(POOL['sites'])} باز نمی‌شه؛ ادامه می‌دم ...")
+            if rnd < 2:
+                for _ in range(6):  # ۳۰ ثانیه صبر تا سرورهای تازه به صف اضافه بشن
+                    if GEN[0] != gen or STOP.is_set():
+                        return
+                    time.sleep(5)
         if GEN[0] == gen and not STOP.is_set():
-            S["note"] = ("هیچ‌کدوم از سرورهای تست‌شده یوتیوب و اینستاگرام رو باز نکرد؛ وصلی ولی این سایت‌ها شاید باز نشن. "
-                         "چند دقیقه بعد دوباره اسکن کن.")
+            S["note"] = (f"بین سرورهای تست‌شده هیچ‌کدوم {_closed(POOL['sites'])} رو باز نکرد؛ بهترین‌شون فعاله. "
+                         "این معمولاً یعنی لیست رایگان فعلی خوب نیست؛ چند ساعت بعد دوباره اسکن کن.")
+    except Exception:
+        pass
+
+
+def record_channels(stats, n):
+    """نتیجه‌ی دریافت دوباره‌ی کانال‌ها (از داخل تونل) رو توی همون جدول منابع می‌ذاره تا صفحه ✓ و ✗ درست نشون بده."""
+    try:
+        db = load_db()
+        now = int(time.time())
+        for x in db["sources"]:
+            st = stats.get(x["url"])
+            if not st:
+                continue
+            x["got"], x["err"] = st["got"], st.get("err", "")
+            if st["got"]:
+                x["last_ok"] = now
+        save_db(db)
+        on = [x for x in db["sources"] if x.get("on")]
+        FETCHINFO.update(t=now, n=(FETCHINFO.get("n") or 0) + n, ok=sum(1 for x in on if x.get("got")), total=len(on))
+    except Exception:
+        pass
+
+
+def channels_retry(gen, profile, seen):
+    """کانال‌های تلگرام معمولاً بدون تونل باز نمی‌شن. بعد از وصل شدن، اونایی که خالی موندن رو از داخل تونل دوباره می‌خونه و کانفیگ‌هاشون رو به صف تست اضافه می‌کنه."""
+    try:
+        P = cfgforge.PROFILES[profile]
+        for rnd in range(4):
+            for _ in range(3 if rnd == 0 else 12):
+                if GEN[0] != gen or STOP.is_set():
+                    return
+                time.sleep(5)
+            while S["stage"] != "connected" or not XRAY_PROC:
+                if GEN[0] != gen or STOP.is_set():
+                    return
+                time.sleep(5)
+            bad = [x["url"] for x in load_db()["sources"] if x.get("kind") == "channel" and x.get("on") and not x.get("got")]
+            if not bad:
+                return
+            links, stats = cfgscan.fetch_sources(bad, per_source=800, log=lambda m: None, stop=STOP.is_set,
+                                                 proxy_port=HTTP, deadline=70)
+            record_channels(stats, len(links))
+            random.shuffle(links)
+            for l in links:
+                if l in seen:
+                    continue
+                seen.add(l)
+                c = cfgscan.parse(l)
+                if c:
+                    cfgscan.static(c)
+                    if not ("unsupported" in c["flags"] or "private_addr" in c["flags"] or danger(c)
+                            or not usable(c, P["only_encrypted"]) or (P["only_encrypted"] and c["flags"] & STRICT_BAD)):
+                        POOL["backlog"].append(c)
     except Exception:
         pass
 
@@ -1330,6 +1429,7 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
         S["note"] = (f"{len(POOL['active'])} سرور فعال و {len(POOL['standby'])} جایگزین آماده‌ست." if failover_on else "")
         POOL["backlog"] = [c for c in cands if not c.get("tested")]
         threading.Thread(target=refill, args=(GEN[0], profile, seen), daemon=True).start()
+        threading.Thread(target=channels_retry, args=(GEN[0], profile, seen), daemon=True).start()
     except Cancel:
         disconnect(silent=True)
         S.update(stage="idle", step=0, pct=0, msg="لغو شد", note="")
