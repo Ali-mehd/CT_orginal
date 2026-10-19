@@ -37,14 +37,40 @@ textarea{width:100%;height:76px;background:#101419;border:1px solid var(--line);
 .btn{padding:5px 13px;border:1px solid var(--line);background:transparent;color:var(--tx);border-radius:9px;cursor:pointer;font:inherit;font-size:13px;margin:4px 0 2px 6px}.btn.x{border-color:#e08a8066;color:var(--bad)}
 pre{white-space:pre-wrap;color:var(--mut);font-size:11px;direction:ltr;text-align:left;margin:4px 0}
 ol{padding-right:18px;margin:4px 0}
+
+:root{--ok:#6fd08c}
+.cols{display:block}
+.chips{display:flex;gap:6px;justify-content:center;flex-wrap:wrap;margin-top:10px}
+.chip{display:inline-flex;align-items:center;gap:5px;padding:1px 10px;border-radius:99px;font-size:12.5px;line-height:1.7;border:1px solid var(--line);color:var(--mut)}
+.chip.ok{color:var(--ok);border-color:#6fd08c55;background:#6fd08c14}.chip.no{color:var(--bad);border-color:#e08a8055;background:#e08a8014}
+.chip.sm{font-size:11.5px;padding:0 8px}
+.pill{display:inline-block;padding:0 10px;border-radius:99px;font-size:11.5px;line-height:1.8;background:#ffffff10;color:var(--mut)}.pill.act{background:#58b5a82a;color:var(--ac)}
+.sr{display:flex;align-items:center;gap:10px;padding:10px 0;border-top:1px solid var(--line);flex-wrap:wrap}.sr:first-child{border-top:0}
+.sr .t{direction:ltr;font-size:13px}.sr .q{color:var(--mut);font-size:12px;direction:ltr}.sr .s{margin-inline-start:auto;display:flex;gap:5px;flex-wrap:wrap;align-items:center}
+.warnbar{margin:12px 4px 0;padding:8px 12px;border-radius:12px;background:#d6ae5c1a;border:1px solid #d6ae5c55;color:var(--warn);font-size:12.5px;text-align:center}
+.note{margin:6px 4px 0;color:var(--mut);font-size:12.5px}.note:empty{display:none}#sub{display:none}
+@media(min-width:900px){
+ .w{max-width:1120px;padding:22px 30px 40px}
+ .top{font-size:17px;margin:0 4px 16px}
+ .cols{display:grid;grid-template-columns:minmax(340px,410px) minmax(0,1fr);gap:18px;align-items:start}
+ .c1{position:sticky;top:14px}
+ .hero{padding:28px 18px 20px}#go{width:148px;height:148px;font-size:20px}
+ .tabs{margin-bottom:12px}.tab{padding:6px 14px;font-size:14px}
+ textarea{height:120px}
+}
+@media(min-width:1500px){body{font-size:16px}.w{max-width:1280px}.cols{grid-template-columns:minmax(380px,460px) minmax(0,1fr)}}
 </style></head><body><div class="w">
 <div class="top"><span class="dot" id="dot"></span>ابزار اتصال</div>
 
+<div class="cols"><div class="c1">
 <div class="card hero">
  <button id="go">اتصال</button>
  <div id="st">آماده‌ست</div><div id="sub"></div>
  <div class="bar" id="barw"><i id="pb"></i></div>
- <div class="m" id="sitesln" title="برای تست دوباره کلیک کن" style="cursor:pointer;margin-top:6px"></div>
+ <div class="note" id="sub2"></div>
+ <div class="chips" id="sitesln" title="برای تست دوباره کلیک کن" style="cursor:pointer"></div>
+ <div class="warnbar" id="tgbadge" hidden>حالت اضطراری فقط تلگرام فعاله؛ یوتیوب و اینستاگرام ممکنه باز نشن.</div>
+ <div id="tgact" style="display:none;margin-top:12px"><button class="btn" id="tgbtn" style="margin:0">اتصال با «حالت اضطراری: فقط تلگرام»</button></div>
  <div class="m" id="updln" style="margin-top:4px"></div>
 </div>
 
@@ -57,10 +83,13 @@ ol{padding-right:18px;margin:4px 0}
  <div class="m" id="mdesc"></div>
 </div>
 
-<details><summary>تنظیمات</summary>
+</div><div class="c2">
+<details id="setd"><summary>تنظیمات</summary>
  <div class="row"><span>جابه‌جایی سرور <button class="i" data-t="h-fo">ⓘ</button></span>
   <span class="seg"><label><input type="radio" name="mode" value="stable" checked><span>هوشمند</span></label><label><input type="radio" name="mode" value="fast"><span>کم‌پینگ</span></label><label><input type="radio" name="mode" value="off"><span>ثابت</span></label></span></div>
  <p class="hint" id="h-fo" hidden><b>هوشمند:</b> تا وقتی سرور فعلی سالمه عوضش نمی‌کنه (حتی اگه دیگری لحظه‌ای پینگ کمتر داشته باشه). فقط وقتی واقعاً قطع یا ضعیف بشه می‌ره سراغ سروری که با چند تست پشت‌سرهم کاملاً سالم بوده؛ سرور خراب تا ۱۰ دقیقه برنمی‌گرده. هر چند دقیقه اگه فعلی خیلی کند باشه و جایگزین پایدارِ واضحاً بهتری باشه، با امکان بازگشت ارتقا می‌ده.<br><b>کم‌پینگ:</b> چند سرور هم‌زمان و هر چند ثانیه کم‌پینگ‌ترین؛ ممکنه مدام جابه‌جا بشه.<br><b>ثابت:</b> یک سرور، بدون جابه‌جایی.</p>
+ <div class="row"><span>حالت اضطراری: فقط تلگرام <button class="i" data-t="h-tg">ⓘ</button></span><label class="sw"><input type="checkbox" id="tgonly"><span></span></label></div>
+ <p class="hint" id="h-tg" hidden>حالت عادی فقط به سروری وصل می‌شه که یوتیوب، اینستاگرام و تلگرام هر سه رو باز کنه. این گزینه برای وقتیه که فیلتر خیلی شدیده و فقط تلگرام لازمه: به سروری وصل می‌شه که تلگرام رو باز می‌کنه، حتی اگه یوتیوب و اینستاگرام باز نشن. از اتصال بعدی اعمال می‌شه.</p>
  <div class="row" id="sysrow" style="display:none"><span><span id="syslbl">پروکسی خودکار ویندوز</span> <button class="i" data-t="h-sys">ⓘ</button></span><label class="sw"><input type="checkbox" id="sysp" checked><span></span></label></div>
  <p class="hint" id="h-sys" hidden>مرورگر و بیشتر برنامه‌ها خودکار از اتصال استفاده می‌کنن و با قطع اتصال یا بستن برنامه به حالت قبل برمی‌گردن. اگه خاموش باشه باید پروکسی رو دستی روی آدرسی که بعد از اتصال نوشته می‌شه بذاری.</p>
  <div class="row"><span>سایت‌های داخلی مستقیم <button class="i" data-t="h-dir">ⓘ</button></span>
@@ -74,7 +103,7 @@ ol{padding-right:18px;margin:4px 0}
 
 <div class="card">
  <div class="tabs" id="tabs"></div>
- <div class="pane" data-p="srv"><p class="m" id="sw" style="margin-top:0"></p><div id="servers"></div><p class="m">«فعال» الان استفاده می‌شه. «آماده» جایگزین‌هاییه که تست شدن و یوتیوب و اینستاگرام رو باز می‌کنن؛ اگه سرور فعال قطع یا ضعیف شد، برنامه خودش فوری به یکی از اینا می‌پره. سرورهایی که یوتیوب و اینستاگرام رو باز نکنن اینجا نگه داشته نمی‌شن. پینگ و سرعت مال آخرین تسته.</p></div>
+ <div class="pane" data-p="srv"><p class="m" id="sw" style="margin-top:0"></p><div id="servers"></div><p class="m">«فعال» الان استفاده می‌شه. «آماده» جایگزین‌هاییه که تست شدن و هر سه سایت (یوتیوب، اینستاگرام و تلگرام) رو باز می‌کنن؛ اگه سرور فعال قطع یا ضعیف شد، برنامه خودش فوری به یکی از اینا می‌پره. سرورهایی که این شرط رو نداشته باشن اینجا نگه داشته نمی‌شن (در «حالت اضطراری» شرط فقط باز شدن تلگرامه). پینگ و سرعت مال آخرین تسته.</p></div>
  <div class="pane" data-p="an"><div id="rsum" class="m" style="margin-top:0">هنوز اسکنی انجام نشده.</div><div id="methods"></div>
   <p class="m">«کارکرده» یعنی ترافیک واقعی ازش رد شد و مشکل امنیتی دیده نشد. سرورهای فهرست سیاه اصلاً تست نمی‌شن.</p>
   <a class="btn" id="dl" download style="text-decoration:none;display:inline-block">ذخیره‌ی فایل گزارش</a><a class="btn" id="vw" target="_blank" style="text-decoration:none;display:inline-block">مشاهده‌ی گزارش</a>
@@ -89,7 +118,7 @@ ol{padding-right:18px;margin:4px 0}
  <div class="pane" data-p="more"><p class="m" style="margin-top:0">«پاک کردن» نتایج و کانفیگ‌های ذخیره‌شده/دستی رو حذف می‌کنه. «حذف کامل» کل برنامه و دیتاش رو پاک می‌کنه.</p>
   <p class="m" id="ports"></p><button class="btn" id="batt" style="display:none">اجازه‌ی کار بدون محدودیت باتری</button><button class="btn" id="hide">بستن پنجره و ادامه در پس‌زمینه</button><button class="btn" id="quit">خروج کامل</button><button class="btn" id="clean">پاک کردن داده‌ها</button><button class="btn x" id="unin">حذف کامل برنامه</button></div>
 </div>
-</div>
+</div></div></div>
 <script>
 const T="__T__";
 const M={balanced:["متعادل","تأخیر + ثبات"],speed:["سرعت","سریع‌ترین دانلود"],stable:["پایداری","بدون حتی یک خطا"],secure:["امنیت","فقط رمزنگاری سخت‌گیرانه"]};
@@ -103,20 +132,20 @@ const el=(t,txt,cls)=>{const e=document.createElement(t);if(txt!=null)e.textCont
 function modes(){const c=$("modes");c.textContent="";for(const k in M){const b=el("button",null,"mode"+(k==prof?" s":""));b.append(M[k][0]);const s=el("small",M[k][1]);b.appendChild(s);b.onclick=()=>{prof=k;modes();save()};c.appendChild(b)}$("mdesc").textContent=MD[prof]}
 function tabs(){const t=$("tabs");t.textContent="";TB.forEach(([k,l])=>{const b=el("button",l,"tab"+(k==tab?" s":""));b.onclick=()=>{tab=k;tabs()};t.appendChild(b)});document.querySelectorAll(".pane").forEach(p=>p.className="pane"+(p.dataset.p==tab?" s":""))}
 document.querySelectorAll(".i").forEach(b=>b.onclick=()=>{const h=$(b.dataset.t);h.hidden=!h.hidden});
-const cur=()=>({profile:prof,mode:document.querySelector("input[name=mode]:checked").value,quick:document.querySelector("input[name=q]:checked").value=="1",speed:document.querySelector("input[name=sp]:checked").value,sysproxy:$("sysp").checked,direct:$("dir").value});
+const cur=()=>({profile:prof,mode:document.querySelector("input[name=mode]:checked").value,quick:document.querySelector("input[name=q]:checked").value=="1",speed:document.querySelector("input[name=sp]:checked").value,sysproxy:$("sysp").checked,direct:$("dir").value,tgonly:$("tgonly").checked});
 const save=()=>api("/api/settings",cur());
 function applySettings(x){if(!x)return;if(x.profile&&M[x.profile])prof=x.profile;
  if(x.mode)document.querySelectorAll("input[name=mode]").forEach(r=>r.checked=r.value==x.mode);
  if(x.speed)document.querySelectorAll("input[name=sp]").forEach(r=>r.checked=r.value==x.speed);
  if(typeof x.quick=="boolean")document.querySelectorAll("input[name=q]").forEach(r=>r.checked=(r.value=="1")==x.quick);
- if(typeof x.sysproxy=="boolean")$("sysp").checked=x.sysproxy;if(x.direct!==undefined)$("dir").value=x.direct;modes()}
+ if(typeof x.sysproxy=="boolean")$("sysp").checked=x.sysproxy;if(typeof x.tgonly=="boolean")$("tgonly").checked=x.tgonly;if(x.direct!==undefined)$("dir").value=x.direct;modes()}
 function render(s){S=s;const st=s.stage,c=s.connected;
  if(!loaded){loaded=true;applySettings(s.settings)}
  $("dot").className="dot "+(st=="connected"?"on":st=="error"?"err":st=="running"?"run":"");
  const g=$("go");g.className=st=="connected"?"on":st=="running"?"run":"";if(st!="running")cancelling=0;g.disabled=cancelling>0;
  g.textContent=cancelling?"در حال لغو…":st=="connected"?"قطع":st=="running"?"لغو":"اتصال";
  const m=$("st");if(m.textContent!=s.msg)m.textContent=s.msg;m.className=st=="error"?"err":"";
- $("sub").textContent="";
+ $("sub").textContent="";$("sub2").textContent=st=="error"?"":(s.note||"");$("tgbadge").hidden=!s.tgonly;$("tgact").style.display=(st=="error"&&s.tiers&&s.tiers.tg>0&&!s.tgonly)?"block":"none";
  $("barw").className="bar"+(st=="running"?" on":"");$("pb").style.width=s.pct+"%";
  $("res").style.display=c?"block":"none";
  if(c)once("res",[c,s.ports],()=>{$("r-ip").textContent=c.ip||"—";$("r-ms").textContent=c.ms+" ms";$("r-n").textContent=c.n;
@@ -132,11 +161,15 @@ function render(s){S=s;const st=s.stage,c=s.connected;
   if(window.AndroidBridge)$("batt").style.display="block"}
  if(s.cdp&&!window._bu){window._bu=1;window.addEventListener("beforeunload",e=>{e.preventDefault();e.returnValue=""})}
  once("ch",[s.sources],()=>{const b=$("chl");b.textContent="";(s.sources||[]).filter(x=>x.kind=="channel").forEach(x=>{const d=el("div",null,"kv");const n=el("span",x.url.replace("https://t.me/s/","@").replace("https://",""));n.style.direction="ltr";const r=el("button","حذف","btn x");r.onclick=()=>api("/api/delsource",{url:x.url}).then(tick);d.append(n,el("span",x.got?x.got+" کانفیگ (آخرین بار)":""),r);b.appendChild(d)});});
- once("sites",[s.sites,s.stage],()=>{const b=$("sitesln");b.textContent="";if(s.stage!="connected"||!s.sites)return;const nm={yt:"یوتیوب",ig:"اینستاگرام",tg:"تلگرام"};Object.keys(nm).forEach(k=>{const e=el("span",nm[k]+(s.sites[k]?" ✓":" ✗"));e.style.color=s.sites[k]?"var(--ok,#6fd08c)":"var(--bad,#ff8a80)";e.style.marginInline="6px";b.appendChild(e)})});
- once("upd",[s.fetch,s.sources],()=>{const b=$("updln");b.textContent="";const f=s.fetch||{};if(!f.t){b.textContent="منابع: هنوز دریافت نشده";return}if(!f.n){b.textContent="منابع: دریافت ناموفق بود (۰ کانفیگ)؛ از لیست ذخیره‌شده‌ی قبلی استفاده می‌شه.";b.style.color="var(--bad,#ff8a80)";return}b.style.color="";const tm=new Date(f.t*1000).toLocaleTimeString("fa-IR",{hour:"2-digit",minute:"2-digit"});b.appendChild(el("span","منابع به‌روز شد ("+tm+"): "+f.n+" کانفیگ از "+f.ok+" منبع"));(s.sources||[]).filter(x=>x.kind=="channel").forEach(x=>{const e=el("span",(x.got?"✓ ":"✗ ")+x.url.replace("https://t.me/s/","@").replace("https://","")+(x.got?" ("+x.got+")":""));e.style.direction="ltr";e.style.display="inline-block";e.style.marginInline="6px";e.style.color=x.got?"var(--ok,#6fd08c)":"var(--bad,#ff8a80)";b.appendChild(e)})});
- once("srv",[s.servers,s.switches],()=>{const sv=$("servers");sv.textContent="";
-  (s.servers||[]).forEach(x=>{const d=el("div",null,"kv");const a=el("span",(x.role=="active"?"● ":"○ ")+x.proto+"/"+x.network+"/"+x.security+":"+x.port);
-   const T={yt:"یوتیوب",ig:"اینستاگرام",tg:"تلگرام"};d.append(a,el("span","پینگ "+(x.ping||"?")+" ms"+(x.kbps?" | "+(x.kbps/1000).toFixed(1)+" Mbps":"")+(x.sites?" | "+Object.keys(T).map(k=>(x.sites[k]?"✓ ":"✗ ")+T[k]).join(" "):"")));sv.appendChild(d)});
+ once("sites",[s.sites,s.stage],()=>{const b=$("sitesln");b.textContent="";if(s.stage!="connected"||!s.sites)return;const nm={yt:"یوتیوب",ig:"اینستاگرام",tg:"تلگرام"};Object.keys(nm).forEach(k=>b.appendChild(el("span",(s.sites[k]?"✓ ":"✗ ")+nm[k],"chip "+(s.sites[k]?"ok":"no"))))});
+ once("upd",[s.fetch,s.sources],()=>{const b=$("updln");b.textContent="";const f=s.fetch||{};if(!f.t){b.textContent="منابع: هنوز دریافت نشده";return}if(!f.n){b.textContent="منابع: دریافت ناموفق بود (۰ کانفیگ)؛ از لیست ذخیره‌شده‌ی قبلی استفاده می‌شه.";b.style.color="var(--bad,#ff8a80)";return}b.style.color="";const tm=new Date(f.t*1000).toLocaleTimeString("fa-IR",{hour:"2-digit",minute:"2-digit"});b.appendChild(el("span","منابع به‌روز شد ("+tm+"): "+f.n+" کانفیگ از "+f.ok+" منبع"));const cw=el("div",null,"chips");(s.sources||[]).filter(x=>x.kind=="channel").forEach(x=>{const e=el("span",(x.got?"✓ ":"✗ ")+x.url.replace("https://t.me/s/","@").replace("https://","")+(x.got?" ("+x.got+")":""),"chip sm "+(x.got?"ok":"no"));e.style.direction="ltr";cw.appendChild(e)});if(cw.childNodes.length)b.appendChild(cw)});
+ once("srv",[s.servers,s.switches],()=>{const sv=$("servers");sv.textContent="";const T={yt:"یوتیوب",ig:"اینستاگرام",tg:"تلگرام"};
+  (s.servers||[]).forEach(x=>{const d=el("div",null,"sr");d.appendChild(el("span",x.role=="active"?"فعال":"آماده","pill"+(x.role=="active"?" act":"")));
+   d.appendChild(el("span",x.proto.toUpperCase()+" · "+x.network+" · "+x.security+" · "+x.port,"t"));
+   d.appendChild(el("span","پینگ "+(x.ping||"?")+" ms"+(x.kbps?" · "+(x.kbps/1000).toFixed(1)+" Mbps":""),"q"));
+   if(x.sites){const c=el("span",null,"s");Object.keys(T).forEach(k=>c.appendChild(el("span",(x.sites[k]?"✓ ":"✗ ")+T[k],"chip sm "+(x.sites[k]?"ok":"no"))));d.appendChild(c)}
+   sv.appendChild(d)});
+  if(!(s.servers||[]).length)sv.appendChild(el("p","هنوز سروری متصل نیست.","m"));
   $("sw").textContent="جابه‌جایی خودکار تا الان: "+(s.switches||0)+" بار"});
  once("mt",[s.methods,s.rsum],()=>{const r=s.rsum||{},m=$("methods");m.textContent="";
   $("rsum").textContent=r.tested?("تست‌شده: "+r.tested+" | پاسخ‌دهنده: "+r.reach+" | کارکرده: "+r.alive+(r.blocked?" | رد‌شده با فهرست سیاه: "+r.blocked:"")+(r.runs_total>1?" | کل اجراها: "+r.runs_total:"")):"هنوز اسکنی انجام نشده.";
@@ -145,9 +178,10 @@ function render(s){S=s;const st=s.stage,c=s.connected;
 $("go").onclick=()=>{const st=S.stage;
  if(st=="connected"||st=="running"){if(st=="running"){cancelling=1;$("go").disabled=true;$("go").textContent="در حال لغو…";setTimeout(()=>{cancelling=0},15000)}return api("/api/stop",{})}
  if(window.AndroidBridge&&$("sysp").checked)AndroidBridge.ensureVpn();$("st").textContent="در حال شروع …";
- api("/api/start",{profile:prof,speed:document.querySelector("input[name=sp]:checked").value,quick:document.querySelector("input[name=q]:checked").value=="1",sysproxy:$("sysp").checked,mode:document.querySelector("input[name=mode]:checked").value,direct:$("dir").value})};
-document.querySelectorAll("input[name=mode],input[name=q],input[name=sp],#sysp,#dir").forEach(e=>e.addEventListener("change",save));
+ api("/api/start",{profile:prof,speed:document.querySelector("input[name=sp]:checked").value,quick:document.querySelector("input[name=q]:checked").value=="1",sysproxy:$("sysp").checked,mode:document.querySelector("input[name=mode]:checked").value,direct:$("dir").value,tgonly:$("tgonly").checked})};
+document.querySelectorAll("input[name=mode],input[name=q],input[name=sp],#sysp,#dir,#tgonly").forEach(e=>e.addEventListener("change",save));
 window.addEventListener("pagehide",()=>{try{navigator.sendBeacon("/api/closing?t="+T,"")}catch(e){}});
+$("tgbtn").onclick=()=>{$("tgonly").checked=true;api("/api/settings",cur()).then(()=>$("go").click())};
 $("sitesln").onclick=()=>{if(S.stage=="connected"){$("sitesln").textContent="در حال تست یوتیوب و اینستاگرام و تلگرام …";api("/api/sitecheck",{}).then(tick)}};
 $("chb").onclick=()=>{$("chm").textContent="در حال خوندن پیام‌ها … (تا ۴۵ ثانیه)";$("chb").disabled=true;api("/api/addsource",{text:$("chn").value}).then(r=>{$("chm").textContent=r.ok?r.found+" کانفیگ پیدا شد؛ کانال به منبع‌ها اضافه شد.":(r.error||"ناموفق");if(r.ok)$("chn").value="";$("chb").disabled=false;tick()}).catch(()=>{$("chm").textContent="ارتباط با برنامه قطع شد.";$("chb").disabled=false})};
 $("impb").onclick=()=>{$("impm").textContent="در حال بررسی … (اگه لینک ساب باشه تا ۳۰ ثانیه)";$("impb").disabled=true;api("/api/import",{text:$("imp").value}).then(r=>{$("impm").textContent=r.added?r.added+" کانفیگ اضافه شد.":r.error=="big"?"متن خیلی بزرگه (حداکثر حدود ۸ مگابایت). تکه‌تکه paste کن.":r.error=="http"?"فقط لینک https پشتیبانی می‌شه.":r.urls?"لینک دریافت نشد یا کانفیگی توش نبود.":"کانفیگ معتبری پیدا نشد.";if(r.added)$("imp").value="";$("impb").disabled=false}).catch(()=>{$("impm").textContent="ارتباط با برنامه قطع شد.";$("impb").disabled=false})};
@@ -156,7 +190,7 @@ $("batt").onclick=()=>{if(window.AndroidBridge)AndroidBridge.batterySettings()};
 $("hide").onclick=()=>window.goHide?(goHide(),0):window.AndroidBridge?AndroidBridge.moveToBack():api("/api/hide",{}).then(()=>{document.body.textContent="برنامه در پس‌زمینه ادامه می‌ده. برای باز کردن دوباره‌ی پنجره، ConfigTool رو اجرا کن."});
 $("quit").onclick=()=>api("/api/quit",{}).then(()=>{document.body.textContent="بسته شد. می‌تونی این پنجره رو ببندی."});
 $("unin").onclick=()=>{if(confirm("کل برنامه و دیتاش حذف بشه؟"))api("/api/uninstall",{}).then(()=>{document.body.textContent="حذف شد. می‌تونی این پنجره رو ببندی."})};
-modes();tabs();$("dl").href="/report?dl=1&t="+T;$("vw").href="/report?t="+T;
+$("setd").open=innerWidth>=900;modes();tabs();$("dl").href="/report?dl=1&t="+T;$("vw").href="/report?t="+T;
 const tick=()=>api("/api/state").then(render).catch(()=>{$("st").textContent="ارتباط با برنامه قطع شده؛ پنجره رو ببند و دوباره باز کن."});
 tick();setInterval(tick,1500);
 </script></body></html>

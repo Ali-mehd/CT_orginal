@@ -166,9 +166,11 @@ def save_settings(j):
         cur["mode"] = j["mode"]
     if j.get("speed") in SPEEDS:
         cur["speed"] = j["speed"]
-    for k in ("quick", "sysproxy"):
+    for k in ("quick", "sysproxy", "tgonly"):
         if isinstance(j.get(k), bool):
             cur[k] = j[k]
+    if isinstance(j.get("tgonly"), bool):
+        TGONLY[0] = j["tgonly"]
     if j.get("direct", "") in cfgforge.COUNTRY_DIRECT or j.get("direct") == "":
         cur["direct"] = j.get("direct", "")
     DATA.mkdir(parents=True, exist_ok=True)
@@ -610,7 +612,7 @@ def _failover(gen, profile, sysproxy, mode):
         if not cand:
             break
         tried.update(id(c) for c in cand)
-        good = sorted([r for r in check_many(cand, 2, 3) if solid(r)], key=rk)  # فقط سرور کاملاً سالم قبول می‌شه
+        good = sorted([r for r in check_many(cand, 2, 3, sites=True) if solid(r)], key=lambda r: (not sites_ok(r), rk(r)))  # فقط سرور کاملاً سالم؛ بین اونا اولویت با سروریه که سایت‌ها رو باز می‌کنه
         if not good or GEN[0] != gen:
             continue
         sel = start_xray(good[:POOL_SIZE] if mode == "fast" else good[:1], profile)
@@ -664,6 +666,8 @@ SPEEDS = {  # rate: تست اتصال در ثانیه، live: تست زنده‌
     "fast": dict(rate=30, live=14, workers=64),
     "turbo": dict(rate=60, live=20, workers=96),
 }
+TGONLY = [bool(load_settings().get("tgonly"))]  # «حالت اضطراری: فقط تلگرام»؛ پیش‌فرض خاموشه و فقط سروری که هر سه سایت رو باز کنه قبول می‌شه
+SITE_CACHE = {}  # نتیجه‌ی تست سه سایت برای هر سرور در همین اجرا
 SPEED = [load_settings().get("speed", "normal") if load_settings().get("speed") in ("gentle", "normal", "fast", "turbo") else "normal"]
 
 
@@ -809,20 +813,60 @@ def record_fetch(stats, n):
 SITE_FA = {"yt": "یوتیوب", "ig": "اینستاگرام", "tg": "تلگرام"}
 
 
-FULL, ACCEPT = 15, 12  # کامل: هر سه سایت | قابل‌قبول: یوتیوب + اینستاگرام (تلگرام به‌تنهایی کافی نیست)
+FULL = 15  # امتیاز سروری که هر سه سایت رو باز می‌کنه
 
 
 def sites_score(c):
     s = c.get("sites") or {}
-    return 10 * bool(s.get("yt") and s.get("ig")) + 3 * bool(s.get("tg")) + bool(s.get("yt")) + bool(s.get("ig"))
+    return 10 * bool(s.get("yt") and s.get("ig") and s.get("tg")) + 3 * bool(s.get("tg")) + bool(s.get("yt")) + bool(s.get("ig"))
 
 
 def sites_ok(c):
-    return sites_score(c) >= ACCEPT
+    """سرور قابل‌قبول؟ حالت عادی: یوتیوب و اینستاگرام و تلگرام هر سه. «حالت اضطراری»: فقط تلگرام."""
+    s = c.get("sites") or {}
+    if TGONLY[0]:
+        return bool(s.get("tg"))
+    return bool(s.get("yt") and s.get("ig") and s.get("tg"))
 
 
 def _closed(r):
     return " و ".join(v for k, v in SITE_FA.items() if not (r or {}).get(k))
+
+
+def _want():
+    return "تلگرام" if TGONLY[0] else "یوتیوب، اینستاگرام و تلگرام"
+
+
+def site_tiers(cache):
+    """چند سرور سالم هر دسته‌اند؟ (برای پیام صادقانه وقتی سرور مناسب پیدا نمی‌شه)"""
+    t = dict(full=0, ytig=0, tg=0, tested=0)
+    for r in list(cache.values()):
+        if not r.get("alive"):
+            continue
+        s = r.get("sites") or {}
+        t["tested"] += 1
+        if s.get("yt") and s.get("ig") and s.get("tg"):
+            t["full"] += 1
+        elif s.get("yt") and s.get("ig"):
+            t["ytig"] += 1
+        elif s.get("tg"):
+            t["tg"] += 1
+    return t
+
+
+def sites_pick(found, cache):
+    """سرورهای سالمی که واقعاً همه‌ی سایت‌های لازم رو باز می‌کنن (بهترین اول). سرورهای تازه همین‌جا تست می‌شن؛
+    نتیجه‌ی ناموفق بعد از ۴ دقیقه دوباره امتحان می‌شه تا یک کندی لحظه‌ای سرور خوب رو برای همیشه رد نکنه."""
+    now = time.time()
+    fresh = [c for c in sorted(list(found), key=ping_key)
+             if c["raw"] not in cache or (not sites_ok(cache[c["raw"]]) and now - cache[c["raw"]].get("site_t", 0) > 240)][:8]
+    if fresh:
+        S.update(step=4, msg=f"تست دسترسی به یوتیوب، اینستاگرام و تلگرام روی {len(fresh)} سرور سالم ...")
+        for c, r in zip(fresh, check_many(fresh, 1, 5, 8, sites=True)):
+            r["site_t"] = now
+            cache[c["raw"]] = r
+    live_ = [r for r in list(cache.values()) if r.get("alive") and not danger(r)]
+    return sorted([r for r in live_ if sites_ok(r)], key=lambda r: (-sites_score(r), ping_key(r)))[:8]
 
 
 def _pull_candidates(found, tried, n):
@@ -850,23 +894,52 @@ def _pull_candidates(found, tried, n):
     return out
 
 
+GUARD_LOCK = threading.Lock()
+
+
 def sites_guard(gen, profile, found):
-    """بعد از اتصال: اگه سرور فعلی یوتیوب، اینستاگرام یا تلگرام رو باز نمی‌کنه، خودش دنبال سروری می‌گرده که همه‌شون رو باز کنه.
-    اگه چنین سروری پیدا نشد، سروری رو نگه می‌داره که بیشترین تعداد از این سه تا رو باز می‌کنه. چند دور تکرار می‌شه چون سرورهای تازه مدام اضافه می‌شن."""
+    if not GUARD_LOCK.acquire(blocking=False):  # هم‌زمان فقط یک جستجو؛ جابه‌جایی‌های تکراری روی هم نیفتن
+        return
+    try:
+        _sites_guard(gen, profile, found)
+    finally:
+        GUARD_LOCK.release()
+
+
+def sites_watch(gen, profile, found):
+    """هر ۵ دقیقه دسترسی به سه سایت رو از داخل تونل دوباره چک می‌کنه. اگه سرور خوب بعداً خراب شد
+    (مثلاً اینستاگرام بسته شد) خودش بدون دخالت تو سرور بهتری پیدا می‌کنه و جابه‌جا می‌شه."""
+    try:
+        while True:
+            for _ in range(60):
+                if GEN[0] != gen or STOP.is_set():
+                    return
+                time.sleep(5)
+            if S["stage"] != "connected" or not POOL["active"]:
+                continue
+            r = cfgscan.site_check(SOCKS, 5)
+            POOL["sites"] = r
+            if not sites_ok({"sites": r}):
+                sites_guard(gen, profile, found)
+    except Exception:
+        pass
+
+
+def _sites_guard(gen, profile, found):
+    """بعد از اتصال (مخصوصاً بعد از جابه‌جایی خودکار): اگه سرور فعلی همه‌ی سایت‌های لازم رو باز نمی‌کنه،
+    خودش دنبال سروری می‌گرده که باز کنه و بهش می‌پره. چند دور تکرار می‌شه چون سرورهای تازه مدام اضافه می‌شن."""
     try:
         time.sleep(1.5)
         if GEN[0] != gen or STOP.is_set() or not POOL["active"]:
             return
         r = cfgscan.site_check(SOCKS, 5)
         POOL["sites"] = r
-        cur = sites_score({"sites": r})
-        if cur >= FULL:
+        if sites_ok({"sites": r}):
             return
         tried = {POOL["active"][0]["raw"]}
         for rnd in range(3):
-            S["note"] = ((f"این سرور {_closed(POOL['sites'])} رو باز نمی‌کنه؛ دارم سروری پیدا می‌کنم که همه‌شون رو باز کنه ..."
-                          if cur < ACCEPT else f"یوتیوب و اینستاگرام باز هستن؛ دنبال سروری می‌گردم که {_closed(POOL['sites'])} هم باز کنه ...")
-                         if rnd == 0 else f"هنوز دنبال سروری می‌گردم که {_closed(POOL['sites'])} رو هم باز کنه (دور {rnd + 1} از ۳) ...")
+            S["note"] = (f"این سرور {_closed(POOL['sites'])} رو باز نمی‌کنه؛ دارم سروری پیدا می‌کنم که {_want()} رو باز کنه ..."
+                         if rnd == 0 else f"هنوز دنبال سروری می‌گردم که {_want()} رو باز کنه (دور {rnd + 1} از ۳) ...")
             t_end = time.time() + (75 if rnd == 0 else 60)
             while time.time() < t_end and GEN[0] == gen and not STOP.is_set():
                 cand = _pull_candidates(found, tried, 8)
@@ -874,8 +947,7 @@ def sites_guard(gen, profile, found):
                     time.sleep(3)
                     continue
                 tried.update(c["raw"] for c in cand)
-                good = [x for x in check_many(cand, 1, 5, 8, sites=True) if solid(x)]
-                good = [x for x in good if sites_score(x) > cur]
+                good = [x for x in check_many(cand, 1, 5, 8, sites=True) if solid(x) and sites_ok(x)]
                 if not good:
                     continue
                 best = sorted(good, key=lambda x: (-sites_score(x), rk(x)))[0]
@@ -892,25 +964,22 @@ def sites_guard(gen, profile, found):
                     POOL["switches"] += 1
                     POOL["sites"] = best["sites"]
                     save_good(sel)
-                    cur = sites_score(best)
-                if cur >= FULL:
-                    S.update(msg="وصل شدی ✓", note="به سروری وصل شدی که یوتیوب، اینستاگرام و تلگرام رو باز می‌کنه")
-                    return
-                S.update(msg="وصل شدی ✓", note=f"بهترین سرور تا الان: {_closed(POOL['sites'])} باز نمی‌شه؛ ادامه می‌دم ...")
+                S.update(msg="وصل شدی ✓", note=f"به سروری وصل شدی که {_want()} رو باز می‌کنه")
+                return
             if rnd < 2:
                 for _ in range(6):  # ۳۰ ثانیه صبر تا سرورهای تازه به صف اضافه بشن
                     if GEN[0] != gen or STOP.is_set():
                         return
                     time.sleep(5)
         if GEN[0] == gen and not STOP.is_set():
-            S["note"] = (f"بین سرورهای تست‌شده هیچ‌کدوم {_closed(POOL['sites'])} رو باز نکرد؛ بهترین‌شون فعاله. "
-                         "این معمولاً یعنی لیست رایگان فعلی خوب نیست؛ چند ساعت بعد دوباره اسکن کن.")
+            S["note"] = (f"بین سرورهای تست‌شده هیچ‌کدوم {_want()} رو باز نکرد؛ فعلاً همین سرور فعاله. "
+                         "چند ساعت بعد دوباره اسکن کن.")
     except Exception:
         pass
 
 
 def standby_sites(gen):
-    """جایگزین‌های آماده (بخش «سرورها») رو در پس‌زمینه از نظر یوتیوب و اینستاگرام تست می‌کنه؛
+    """جایگزین‌های آماده (بخش «سرورها») رو در پس‌زمینه از نظر سایت‌های لازم تست می‌کنه؛
     اونایی که باز نمی‌کنن از لیست جایگزین‌ها حذف می‌شن تا جابه‌جایی خودکار هیچ‌وقت به سرور بی‌فایده نپره."""
     try:
         while GEN[0] == gen and not STOP.is_set():
@@ -918,15 +987,19 @@ def standby_sites(gen):
             if not todo:
                 time.sleep(5)
                 continue
+            okl = []
             for o, r in zip(todo, check_many(todo, 1, 5, 6, sites=True)):
-                if r.get("alive") and sites_score(r) >= ACCEPT:
+                if r.get("alive") and sites_ok(r):
                     o["sites"] = r["sites"]
+                    okl.append(o)
                 else:
                     o["sites"] = {}
                     try:
                         POOL["standby"].remove(o)
                     except ValueError:
                         pass
+            if okl:
+                save_good(okl)  # سرورهای تاییدشده یادشون می‌مونه؛ دفعه‌ی بعد اول همین‌ها تست می‌شن و اتصال خیلی سریع‌تره
     except Exception:
         pass
 
@@ -1236,21 +1309,13 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
 
         conn = {"busy": False, "t_first": None}
 
-        site_cache = {}
+        site_cache = SITE_CACHE
 
-        def pick_first(partial=False):
-            """نامزدهای اتصال اول: فقط سرورهایی که یوتیوب و اینستاگرام رو واقعاً باز می‌کنن (تلگرام امتیاز اضافه‌ست).
-            اگه هنوز چنین سروری پیدا نشده برمی‌گرده خالی و منتظر سرورهای بعدی می‌مونه؛ فقط وقتی partial=True (زمان انتظار تموم شد)
-            به بهترین سرور موجود راضی می‌شه. حالت «سرعت»: بین همین‌ها سریع‌ترین."""
-            fresh = [c for c in sorted(list(found), key=ping_key) if c["raw"] not in site_cache][:8]
-            if fresh:
-                S.update(step=4, msg=f"تست دسترسی به یوتیوب، اینستاگرام و تلگرام روی {len(fresh)} سرور سالم ...")
-                for c, r in zip(fresh, check_many(fresh, 1, 5, 8, sites=True)):
-                    site_cache[c["raw"]] = r
-            live_ = [r for r in site_cache.values() if r.get("alive") and not danger(r)]
-            pool = sorted([r for r in live_ if sites_ok(r)], key=lambda r: (-sites_score(r), ping_key(r)))[:8]
-            if not pool and partial:
-                pool = sorted(live_, key=lambda r: (-sites_score(r), ping_key(r)))[:8] or sorted(list(found), key=ping_key)[:1]
+        def pick_first():
+            """نامزدهای اتصال اول: فقط سرورهایی که همه‌ی سایت‌های لازم رو واقعاً باز می‌کنن (حالت عادی: یوتیوب، اینستاگرام و تلگرام؛
+            «حالت اضطراری»: فقط تلگرام). هیچ‌وقت به کمتر راضی نمی‌شه؛ اگه سروری پیدا نشده خالی برمی‌گرده و جستجو ادامه داره.
+            حالت «سرعت»: بین همین‌ها سریع‌ترین."""
+            pool = sites_pick(found, site_cache)
             if profile == "speed" and len(pool) > 1:
                 S.update(step=4, msg=f"در حال سنجش سرعت {len(pool)} سرور سالم ...")
                 ver = check_many(pool, 1, 5, 3, speed=True, secs=2.0)  # هم‌زمانی کم تا اندازه‌گیری‌ها قابل مقایسه بمونن
@@ -1277,27 +1342,29 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
                 return
             if not (force or ready_first()):
                 return
+            now = time.time()
+            if not (any(c["raw"] not in site_cache or (not sites_ok(site_cache[c["raw"]]) and now - site_cache[c["raw"]].get("site_t", 0) > 240)
+                        for c in list(found)) or any(r.get("alive") and sites_ok(r) for r in list(site_cache.values()))):
+                return  # چیز تازه‌ای برای تست نیست و سرور قابل‌قبولی هم نداریم؛ پیام صفحه الکی عوض نشه
             conn["busy"] = True
             S.update(step=4, msg=("در حال انتخاب سریع‌ترین سرور ..." if profile == "speed"
-                                  else "اولین سرور سالم پیدا شد؛ در حال اتصال ..."))
-
-            partial = force or bool(conn["t_first"] and time.time() - conn["t_first"] > 60)
+                                  else "سرور سالم پیدا شد؛ در حال بررسی یوتیوب، اینستاگرام و تلگرام ..."))
 
             def run():
                 try:
-                    try_connect(partial)
+                    try_connect()
                 except Exception:
                     fails[0] += 1
                 finally:
                     conn["busy"] = False
                     if not connected[0] and S["stage"] == "running" and not STOP.is_set():
-                        S.update(step=2, msg=f"ادامه‌ی جستجو ... ({len(found)} سرور سالم پیدا شده)")
+                        S.update(step=2, msg=f"ادامه‌ی جستجو ... ({len(found)} سرور سالم؛ هنوز سروری که {_want()} رو باز کنه پیدا نشده)")
             threading.Thread(target=run, daemon=True).start()
 
-        def try_connect(partial=False):
-            cands = pick_first(partial)
+        def try_connect():
+            cands = pick_first()
             if not cands:
-                return  # هنوز سروری که یوتیوب و اینستاگرام رو باز کنه پیدا نشده؛ اتصال به سرور بی‌فایده انجام نمی‌شه
+                return  # هنوز سروری که همه‌ی سایت‌های لازم رو باز کنه پیدا نشده؛ اتصال به سرور بی‌فایده انجام نمی‌شه
             res = connect_ladder(cands, profile, 1)
             if not res:
                 fails[0] += 1
@@ -1333,6 +1400,7 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
             threading.Thread(target=supervisor, args=(GEN[0], profile, sysproxy, mode), daemon=True).start()
             threading.Thread(target=sites_guard, args=(GEN[0], profile, found), daemon=True).start()
             threading.Thread(target=standby_sites, args=(GEN[0],), daemon=True).start()
+            threading.Thread(target=sites_watch, args=(GEN[0], profile, found), daemon=True).start()
 
         finished, why = 0, ""
         while not STOP.is_set():
@@ -1407,10 +1475,13 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
             if x["url"] in idx:
                 idx[x["url"]].update(got=x.get("got", 0), alive=x.get("alive", 0))
         save_db(fresh)
-        if (not connected[0] and not STOP.is_set() and cycle < 8
+        if (not connected[0] and not STOP.is_set() and cycle < (30 if found else 8)  # سرور سالم هست ولی هیچ‌کدوم شرط سایت‌ها رو نداره: بی‌وقفه با منابع تازه ادامه بده
                 and not (P["only_encrypted"] and fst["n"] and not tested)):
             nxt = 2 if level >= 3 else level + 1  # هیچ‌وقت تسلیم نمی‌شه: مرحله‌ی بعد، بعد از کمی صبر دوباره از مرحله‌ی ۲
-            S.update(stage="running", step=2, pct=8, msg=f"وصل نشد؛ تلاش با روش‌های قوی‌تر (مرحله {nxt}) ...")
+            POOL["tiers"] = site_tiers(site_cache)
+            S.update(stage="running", step=2, pct=8,
+                     msg=(f"سرور سالم هست ولی هیچ‌کدوم {_want()} رو باز نکرد؛ دنبال سرورهای بیشتر می‌گردم (مرحله {nxt}) ..." if found
+                          else f"وصل نشد؛ تلاش با روش‌های قوی‌تر (مرحله {nxt}) ..."))
             if level >= 3:
                 for _ in range(30):
                     if STOP.is_set():
@@ -1431,6 +1502,14 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
                         "حالت «کامل» یا منابع بیشتر رو امتحان کن.")
                 src = "" if fst["n"] else " (دانلود منابع هم موفق نبود)"
                 raise RuntimeError(f"از {len(tested)} کانفیگ تست‌شده، {reach_ok} تا به اتصال جواب دادن و {len(found)} تا سالم بودن.{src} {hint}")
+            tr = site_tiers(site_cache)
+            POOL["tiers"] = tr
+            if tr["tested"]:
+                if TGONLY[0]:
+                    raise RuntimeError(f"{len(found)} سرور سالم پیدا شد ولی هیچ‌کدوم تلگرام رو باز نکرد. چند ساعت بعد دوباره اسکن کن.")
+                raise RuntimeError(f"{len(found)} سرور سالم پیدا شد ولی هیچ‌کدوم یوتیوب، اینستاگرام و تلگرام رو با هم باز نکرد "
+                                   f"({tr['ytig']} تا فقط یوتیوب و اینستاگرام، {tr['tg']} تا فقط تلگرام). چند ساعت بعد دوباره اسکن کن"
+                                   + (" یا «حالت اضطراری: فقط تلگرام» رو روشن کن." if tr["tg"] else "."))
             raise RuntimeError(f"{len(found)} سرور سالم پیدا شد ولی اتصال نهایی برقرار نشد. دوباره امتحان کن.")
         # اولین سرورِ وصل‌شده فقط «موقتی»ه؛ همه‌ی سرورهای سالم با تست آروم و چندنمونه‌ای دوباره و منصفانه سنجیده می‌شن
         if profile == "speed":  # سرور با سرعتِ اندازه‌گیری‌شده‌ی بیشتر اول؛ بعد ناشناخته‌ها با پینگ
@@ -1518,6 +1597,7 @@ def state():
     d["ports"] = [SOCKS, HTTP]
     d["profile"] = CUR[0]
     d["settings"] = load_settings()
+    d["tgonly"], d["tiers"] = TGONLY[0], POOL.get("tiers")
     return d
 
 
@@ -1629,6 +1709,9 @@ class H(http.server.BaseHTTPRequestHandler):
             global PIPE
             DIRECT[0] = j.get("direct") if j.get("direct") in cfgforge.COUNTRY_DIRECT else ""
             VPN_WANT[0] = bool(j.get("sysproxy", True))
+            TGONLY[0] = bool(j.get("tgonly", False))
+            SITE_CACHE.clear()
+            POOL["tiers"] = None
             if j.get("speed") in SPEEDS:
                 SPEED[0] = j["speed"]
             if PIPE and PIPE.is_alive():
