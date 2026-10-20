@@ -90,6 +90,8 @@ ol{padding-right:18px;margin:4px 0}
  <p class="hint" id="h-fo" hidden><b>هوشمند:</b> تا وقتی سرور فعلی سالمه عوضش نمی‌کنه (حتی اگه دیگری لحظه‌ای پینگ کمتر داشته باشه). فقط وقتی واقعاً قطع یا ضعیف بشه می‌ره سراغ سروری که با چند تست پشت‌سرهم کاملاً سالم بوده؛ سرور خراب تا ۱۰ دقیقه برنمی‌گرده. هر چند دقیقه اگه فعلی خیلی کند باشه و جایگزین پایدارِ واضحاً بهتری باشه، با امکان بازگشت ارتقا می‌ده.<br><b>کم‌پینگ:</b> چند سرور هم‌زمان و هر چند ثانیه کم‌پینگ‌ترین؛ ممکنه مدام جابه‌جا بشه.<br><b>ثابت:</b> یک سرور، بدون جابه‌جایی.</p>
  <div class="row"><span>حالت اضطراری: فقط تلگرام <button class="i" data-t="h-tg">ⓘ</button></span><label class="sw"><input type="checkbox" id="tgonly"><span></span></label></div>
  <p class="hint" id="h-tg" hidden>حالت عادی فقط به سروری وصل می‌شه که یوتیوب، اینستاگرام و تلگرام هر سه رو باز کنه. این گزینه برای وقتیه که فیلتر خیلی شدیده و فقط تلگرام لازمه: به سروری وصل می‌شه که تلگرام رو باز می‌کنه، حتی اگه یوتیوب و اینستاگرام باز نشن. از اتصال بعدی اعمال می‌شه.</p>
+ <div class="row"><span>جستجوی خودکار منبع تازه <button class="i" data-t="h-as">ⓘ</button></span><label class="sw"><input type="checkbox" id="autosrc" checked><span></span></label></div>
+ <p class="hint" id="h-as" hidden>بعد از اتصال، برنامه از داخل تونل توی گیت‌هاب دنبال ریپوهای تازه‌ای می‌گرده که لیست کانفیگ دارن. هر فایل جدا دانلود می‌شه و فقط اگه حداقل ۳۰ کانفیگ قابل‌خوندن داشته باشه به‌عنوان منبع خودکار اضافه می‌شه (حداکثر ۲۵ تا). منبعی که کلی سرور ازش تست بشه ولی هیچ سرور مفیدی نده خودش غیرفعال می‌شه. منبع‌های خودت هیچ‌وقت خودکار حذف یا غیرفعال نمی‌شن.</p>
  <div class="row" id="sysrow" style="display:none"><span><span id="syslbl">پروکسی خودکار ویندوز</span> <button class="i" data-t="h-sys">ⓘ</button></span><label class="sw"><input type="checkbox" id="sysp" checked><span></span></label></div>
  <p class="hint" id="h-sys" hidden>مرورگر و بیشتر برنامه‌ها خودکار از اتصال استفاده می‌کنن و با قطع اتصال یا بستن برنامه به حالت قبل برمی‌گردن. اگه خاموش باشه باید پروکسی رو دستی روی آدرسی که بعد از اتصال نوشته می‌شه بذاری.</p>
  <div class="row"><span>سایت‌های داخلی مستقیم <button class="i" data-t="h-dir">ⓘ</button></span>
@@ -104,7 +106,11 @@ ol{padding-right:18px;margin:4px 0}
 <div class="card">
  <div class="tabs" id="tabs"></div>
  <div class="pane" data-p="srv"><p class="m" id="sw" style="margin-top:0"></p><div id="servers"></div><p class="m">«فعال» الان استفاده می‌شه. «آماده» جایگزین‌هاییه که تست شدن و هر سه سایت (یوتیوب، اینستاگرام و تلگرام) رو باز می‌کنن؛ اگه سرور فعال قطع یا ضعیف شد، برنامه خودش فوری به یکی از اینا می‌پره. سرورهایی که این شرط رو نداشته باشن اینجا نگه داشته نمی‌شن (در «حالت اضطراری» شرط فقط باز شدن تلگرامه). پینگ و سرعت مال آخرین تسته.</p></div>
- <div class="pane" data-p="an"><div id="rsum" class="m" style="margin-top:0">هنوز اسکنی انجام نشده.</div><div id="methods"></div>
+ <div class="pane" data-p="an"><div id="learnbox" class="m" style="margin-top:0;padding-bottom:12px;border-bottom:1px solid var(--line)"><b style="color:var(--fg)">یادگیری محلی</b>
+   <div id="learntxt" style="margin-top:4px"></div><div class="chips" id="learnbest" style="justify-content:flex-start"></div>
+   <p class="m" style="margin:6px 0 0">فقط روی همین دستگاه و بدون اینترنت ذخیره می‌شه و آدرس سرورها ذخیره نمی‌شه؛ فقط شمارنده‌ی ویژگی‌ها (پروتکل، ترنسپورت، پورت، ساعت، منبع). برنامه باهاش سرورهای امیدوارکننده رو اول تست می‌کنه.</p>
+   <button class="btn" id="learnreset" style="margin:6px 0 0">پاک کردن یادگیری</button></div>
+  <div id="rsum" class="m" style="margin-top:0">هنوز اسکنی انجام نشده.</div><div id="methods"></div>
   <p class="m">«کارکرده» یعنی ترافیک واقعی ازش رد شد و مشکل امنیتی دیده نشد. سرورهای فهرست سیاه اصلاً تست نمی‌شن.</p>
   <a class="btn" id="dl" download style="text-decoration:none;display:inline-block">ذخیره‌ی فایل گزارش</a><a class="btn" id="vw" target="_blank" style="text-decoration:none;display:inline-block">مشاهده‌ی گزارش</a>
   <p class="m">گزارش کامل (همه‌ی اجراها، به تفکیک پروتکل، ترنسپورت، امنیت و پورت، و دلیل شکست‌ها) بدون هیچ آدرس سرور یا رمزی ساخته می‌شه و می‌تونی نگهش داری.</p></div>
@@ -113,7 +119,9 @@ ol{padding-right:18px;margin:4px 0}
 <button class="btn" id="chb">افزودن کانال</button><span class="m" id="chm"></span><div id="chl"></div>
 <hr style="border:0;border-top:1px solid var(--line);margin:12px 0"><p class="m" style="margin-top:0">کانفیگ یا لینک ساب‌اسکریپشن رو از دوستات یا کانال‌ها اینجا paste کن؛ همین‌ها هم تست می‌شن و برای بدون‌اینترنت‌آزاد بودن ذخیره می‌مونن.</p>
   <textarea id="imp" placeholder="vless://  vmess://  trojan://  ss://"></textarea>
-<button class="btn" id="impb">افزودن</button><span class="m" id="impm"></span></div>
+<button class="btn" id="impb">افزودن</button><span class="m" id="impm"></span>
+  <hr style="border:0;border-top:1px solid var(--line);margin:12px 0"><p class="m" style="margin-top:0"><b>منبع‌های خودکار (از گیت‌هاب):</b> <span id="discmsg"></span></p>
+  <button class="btn" id="discb" style="margin:0 0 8px">جستجوی منبع تازه همین الان</button><div id="autol"></div></div>
  <div class="pane" data-p="help"><ol class="m" style="margin-top:0"><li><b>متعادل:</b> بهترین ترکیب تأخیر و ثبات.</li><li><b>سرعت:</b> سرعت دانلود واقعی هر سرور (از داخل تونل) اندازه‌گیری می‌شه و سریع‌ترین انتخاب می‌شه.</li><li><b>پایداری:</b> فقط سروری که ۵ تست پشت‌سرهم بدون حتی یک خطا داشته؛ کم‌نوسان‌ترین اول.</li><li><b>امنیت بیشتر:</b> فقط Reality/TLS، بدون هیچ هشدار تنظیماتی، Reality اول؛ کمی گزینه‌ی کمتر.</li><li>ترفندهای کمکی (fragment، mux) فقط وقتی کانفیگ ساده وصل نشد خودکار امتحان می‌شن.</li><li>صاحب سرور رایگان مقصدها رو می‌بینه؛ وارد بانک و ایمیل اصلی نشو.</li><li id="h-bg">وقتی پنجره رو می‌بندی، می‌پرسه اتصال در پس‌زمینه ادامه داشته باشه یا همه‌چیز کامل بسته بشه.</li></ol></div>
  <div class="pane" data-p="more"><p class="m" style="margin-top:0">«پاک کردن» نتایج و کانفیگ‌های ذخیره‌شده/دستی رو حذف می‌کنه. «حذف کامل» کل برنامه و دیتاش رو پاک می‌کنه.</p>
   <p class="m" id="ports"></p><button class="btn" id="batt" style="display:none">اجازه‌ی کار بدون محدودیت باتری</button><button class="btn" id="hide">بستن پنجره و ادامه در پس‌زمینه</button><button class="btn" id="quit">خروج کامل</button><button class="btn" id="clean">پاک کردن داده‌ها</button><button class="btn x" id="unin">حذف کامل برنامه</button></div>
@@ -132,13 +140,13 @@ const el=(t,txt,cls)=>{const e=document.createElement(t);if(txt!=null)e.textCont
 function modes(){const c=$("modes");c.textContent="";for(const k in M){const b=el("button",null,"mode"+(k==prof?" s":""));b.append(M[k][0]);const s=el("small",M[k][1]);b.appendChild(s);b.onclick=()=>{prof=k;modes();save()};c.appendChild(b)}$("mdesc").textContent=MD[prof]}
 function tabs(){const t=$("tabs");t.textContent="";TB.forEach(([k,l])=>{const b=el("button",l,"tab"+(k==tab?" s":""));b.onclick=()=>{tab=k;tabs()};t.appendChild(b)});document.querySelectorAll(".pane").forEach(p=>p.className="pane"+(p.dataset.p==tab?" s":""))}
 document.querySelectorAll(".i").forEach(b=>b.onclick=()=>{const h=$(b.dataset.t);h.hidden=!h.hidden});
-const cur=()=>({profile:prof,mode:document.querySelector("input[name=mode]:checked").value,quick:document.querySelector("input[name=q]:checked").value=="1",speed:document.querySelector("input[name=sp]:checked").value,sysproxy:$("sysp").checked,direct:$("dir").value,tgonly:$("tgonly").checked});
+const cur=()=>({profile:prof,mode:document.querySelector("input[name=mode]:checked").value,quick:document.querySelector("input[name=q]:checked").value=="1",speed:document.querySelector("input[name=sp]:checked").value,sysproxy:$("sysp").checked,direct:$("dir").value,tgonly:$("tgonly").checked,autosrc:$("autosrc").checked});
 const save=()=>api("/api/settings",cur());
 function applySettings(x){if(!x)return;if(x.profile&&M[x.profile])prof=x.profile;
  if(x.mode)document.querySelectorAll("input[name=mode]").forEach(r=>r.checked=r.value==x.mode);
  if(x.speed)document.querySelectorAll("input[name=sp]").forEach(r=>r.checked=r.value==x.speed);
  if(typeof x.quick=="boolean")document.querySelectorAll("input[name=q]").forEach(r=>r.checked=(r.value=="1")==x.quick);
- if(typeof x.sysproxy=="boolean")$("sysp").checked=x.sysproxy;if(typeof x.tgonly=="boolean")$("tgonly").checked=x.tgonly;if(x.direct!==undefined)$("dir").value=x.direct;modes()}
+ if(typeof x.sysproxy=="boolean")$("sysp").checked=x.sysproxy;if(typeof x.tgonly=="boolean")$("tgonly").checked=x.tgonly;$("autosrc").checked=x.autosrc!==false;if(x.direct!==undefined)$("dir").value=x.direct;modes()}
 function render(s){S=s;const st=s.stage,c=s.connected;
  if(!loaded){loaded=true;applySettings(s.settings)}
  $("dot").className="dot "+(st=="connected"?"on":st=="error"?"err":st=="running"?"run":"");
@@ -171,6 +179,18 @@ function render(s){S=s;const st=s.stage,c=s.connected;
    sv.appendChild(d)});
   if(!(s.servers||[]).length)sv.appendChild(el("p","هنوز سروری متصل نیست.","m"));
   $("sw").textContent="جابه‌جایی خودکار تا الان: "+(s.switches||0)+" بار"});
+ once("auto",[s.autosrc,s.disc],()=>{const D=s.disc||{};$("discmsg").textContent=D.running?"در حال جستجو ...":(D.msg||"هنوز جستجو نشده؛ بعد از اتصال خودکار شروع می‌شه.");
+  const L=$("autol");L.textContent="";(s.autosrc||[]).forEach(x=>{const d=el("div",null,"sr");
+   d.appendChild(el("span",x.off?"غیرفعال":"فعال","pill"+(x.off?"":" act")));
+   const nm=el("span",x.url.replace("https://raw.githubusercontent.com/","").replace(/\/(main|master)\//,"/").slice(0,52),"t");d.appendChild(nm);
+   d.appendChild(el("span",x.got+" کانفیگ"+(x.tested?" · "+x.tested+" تست، "+x.passed+" مفید":""),"q"));
+   const b=el("button","حذف","i");b.style.marginInlineStart="auto";b.onclick=()=>api("/api/delsource",{url:x.url}).then(tick);d.appendChild(b);L.appendChild(d)});
+  if(!(s.autosrc||[]).length)L.appendChild(el("p","هنوز منبع خودکاری اضافه نشده.","m"))});
+ once("learn",[s.learn],()=>{const L=s.learn,t=$("learntxt"),b=$("learnbest");b.textContent="";
+  if(!L){t.textContent="هنوز چیزی یاد نگرفته؛ بعد از اولین اسکن شروع می‌شه.";return}
+  t.textContent="تا الان "+L.tested+" سرور تست شده؛ "+L.alive+" تا کار کرد و از "+L.sitetested+" تست سایت، "+L.passed+" تا همه‌ی سایت‌های لازم رو باز کرد ("+L.runs+" اسکن تجربه).";
+  const add=(n,v)=>{if(v&&v.length){const e=el("span",n+": "+v[0],"chip sm ok");e.style.direction="ltr";b.appendChild(e)}};
+  add("بهترین پروتکل",L.proto);add("ترنسپورت",L.network);add("پورت",L.port);if(L.source&&L.source.length)add("منبع",[L.source[0].replace("https://","").slice(0,38)])});
  once("mt",[s.methods,s.rsum],()=>{const r=s.rsum||{},m=$("methods");m.textContent="";
   $("rsum").textContent=r.tested?("تست‌شده: "+r.tested+" | پاسخ‌دهنده: "+r.reach+" | کارکرده: "+r.alive+(r.blocked?" | رد‌شده با فهرست سیاه: "+r.blocked:"")+(r.runs_total>1?" | کل اجراها: "+r.runs_total:"")):"هنوز اسکنی انجام نشده.";
   (s.methods||[]).forEach(x=>{const d=el("div",null,"kv");d.append(el("span",x.k),el("span",x.alive+" از "+x.tested+" ("+x.rate+"٪)"+(x.mbps?" | "+x.mbps+" Mbps":"")+(x.rescued?" | ترفند: "+x.rescued:"")));m.appendChild(d)})});
@@ -179,8 +199,10 @@ $("go").onclick=()=>{const st=S.stage;
  if(st=="connected"||st=="running"){if(st=="running"){cancelling=1;$("go").disabled=true;$("go").textContent="در حال لغو…";setTimeout(()=>{cancelling=0},15000)}return api("/api/stop",{})}
  if(window.AndroidBridge&&$("sysp").checked)AndroidBridge.ensureVpn();$("st").textContent="در حال شروع …";
  api("/api/start",{profile:prof,speed:document.querySelector("input[name=sp]:checked").value,quick:document.querySelector("input[name=q]:checked").value=="1",sysproxy:$("sysp").checked,mode:document.querySelector("input[name=mode]:checked").value,direct:$("dir").value,tgonly:$("tgonly").checked})};
-document.querySelectorAll("input[name=mode],input[name=q],input[name=sp],#sysp,#dir,#tgonly").forEach(e=>e.addEventListener("change",save));
+document.querySelectorAll("input[name=mode],input[name=q],input[name=sp],#sysp,#dir,#tgonly,#autosrc").forEach(e=>e.addEventListener("change",save));
 window.addEventListener("pagehide",()=>{try{navigator.sendBeacon("/api/closing?t="+T,"")}catch(e){}});
+$("discb").onclick=()=>api("/api/discover",{}).then(tick);
+$("learnreset").onclick=()=>{if(confirm("یادگیری پاک بشه؟"))api("/api/learn_reset",{}).then(tick)};
 $("tgbtn").onclick=()=>{$("tgonly").checked=true;api("/api/settings",cur()).then(()=>$("go").click())};
 $("sitesln").onclick=()=>{if(S.stage=="connected"){$("sitesln").textContent="در حال تست یوتیوب و اینستاگرام و تلگرام …";api("/api/sitecheck",{}).then(tick)}};
 $("chb").onclick=()=>{$("chm").textContent="در حال خوندن پیام‌ها … (تا ۴۵ ثانیه)";$("chb").disabled=true;api("/api/addsource",{text:$("chn").value}).then(r=>{$("chm").textContent=r.ok?r.found+" کانفیگ پیدا شد؛ کانال به منبع‌ها اضافه شد.":(r.error||"ناموفق");if(r.ok)$("chn").value="";$("chb").disabled=false;tick()}).catch(()=>{$("chm").textContent="ارتباط با برنامه قطع شد.";$("chb").disabled=false})};

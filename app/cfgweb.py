@@ -101,9 +101,16 @@ def load_db():
     return db
 
 
+def _atomic(path, text):
+    """نوشتن امن: اگه برنامه وسط نوشتن بسته بشه، فایل قبلی سالم می‌مونه."""
+    tmp = Path(str(path) + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
 def save_db(db):
     DATA.mkdir(parents=True, exist_ok=True)
-    SRC_DB.write_text(json.dumps(db, ensure_ascii=False, indent=1), encoding="utf-8")
+    _atomic(SRC_DB, json.dumps(db, ensure_ascii=False, indent=1))
 
 
 def _dpapi(data, enc):
@@ -166,7 +173,7 @@ def save_settings(j):
         cur["mode"] = j["mode"]
     if j.get("speed") in SPEEDS:
         cur["speed"] = j["speed"]
-    for k in ("quick", "sysproxy", "tgonly"):
+    for k in ("quick", "sysproxy", "tgonly", "autosrc"):
         if isinstance(j.get(k), bool):
             cur[k] = j[k]
     if isinstance(j.get("tgonly"), bool):
@@ -174,7 +181,7 @@ def save_settings(j):
     if j.get("direct", "") in cfgforge.COUNTRY_DIRECT or j.get("direct") == "":
         cur["direct"] = j.get("direct", "")
     DATA.mkdir(parents=True, exist_ok=True)
-    SETTINGS.write_text(json.dumps(cur), encoding="utf-8")
+    _atomic(SETTINGS, json.dumps(cur))
 
 
 
@@ -203,7 +210,7 @@ def update_block(force=False):
         for u in cfgscan.BLOCK_SOURCES:
             for m in cfgscan.mirror_urls(u):
                 try:
-                    op = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                    op = cfgscan.safe_opener()
                     texts.append(op.open(urllib.request.Request(m, headers={"User-Agent": "Mozilla/5.0"}),
                                          timeout=20).read(8_000_000).decode("utf-8", "replace"))
                     break
@@ -292,11 +299,15 @@ def check(c, rounds=1, timeout=3, speed=False, secs=3.0, sites=False):
     """تست واقعی یه کانفیگ روی یه نمونه‌ی جدا از xray (روی یه کپی تا اصل خراب نشه)."""
     cc = dict(c)
     cc["flags"] = set(c["flags"])
+    if sites:  # نتیجه‌ی قدیمی سایت‌ها نباید جای تست تازه بشینه
+        cc.pop("sites", None)
     try:
         cfgscan.live(cc, find_xray(), rounds, timeout, speed, secs, sites)
     except Exception:
         cc["alive"] = False
     cc["verified_at"] = time.time()
+    if sites:
+        cc["site_t"] = cc["verified_at"]  # زمان آخرین تست یوتیوب/اینستاگرام/تلگرام
     return cc
 
 
@@ -551,8 +562,8 @@ def refresh_standby(gen):
         if r is None:
             keep.append(c)
         elif solid(r, 0.5):
-            if "sites" in c:
-                r["sites"] = c["sites"]
+            if "sites" in c:  # این تست سایت‌ها رو نمی‌سنجه؛ نتیجه‌ی قبلی (با زمان خودش) می‌مونه تا standby_sites دوباره بسنجه
+                r["sites"], r["site_t"] = c["sites"], c.get("site_t", 0)
             keep.append(r)
     POOL["standby"] = sorted(keep, key=eff)
 
@@ -587,7 +598,8 @@ def _failover(gen, profile, sysproxy, mode):
         if GEN[0] != gen or STOP.is_set():
             return
         fastc = sorted([c for c in rest if id(c) not in tried and c.get("verified_at", 0) > time.time() - 45
-                        and (c.get("success") or 0) >= 0.99 and not danger(c) and sites_ok(c)], key=rk)
+                        and (c.get("success") or 0) >= 0.99 and not danger(c) and sites_ok(c)
+                        and time.time() - c.get("site_t", 0) < SITE_FRESH], key=rk)  # نتیجه‌ی سایت‌های کهنه مسیر سریع رو نمی‌گیره
         if not fastc:
             break
         c = fastc[0]
@@ -615,7 +627,8 @@ def _failover(gen, profile, sysproxy, mode):
         good = sorted([r for r in check_many(cand, 2, 3, sites=True) if solid(r)], key=lambda r: (not sites_ok(r), rk(r)))  # فقط سرور کاملاً سالم؛ بین اونا اولویت با سروریه که سایت‌ها رو باز می‌کنه
         if not good or GEN[0] != gen:
             continue
-        sel = start_xray(good[:POOL_SIZE] if mode == "fast" else good[:1], profile)
+        pool = [g for g in good if sites_ok(g)] or good  # توی حالت کم‌پینگ هم سرورِ بی‌سایت وسط استخر نیاد (مگر چیزی بهتر نباشه)
+        sel = start_xray(pool[:POOL_SIZE] if mode == "fast" else pool[:1], profile)
         ms = probe_retry(3, 3)
         if ms:
             POOL["standby"] = [c for c in rest if id(c) not in tried] + [g for g in good if g not in sel]
@@ -645,8 +658,8 @@ def _upgrade_check(gen, profile, hist):
     med = ok[len(ok) // 2]
     if med < 400:
         return  # اختلاف کوچیک ارزش جابه‌جایی نداره
-    res = check_many(sorted(POOL["standby"], key=eff)[:4], 4, 4, 4)
-    good = sorted([r for r in res if solid(r)], key=eff)
+    res = check_many(sorted(POOL["standby"], key=eff)[:4], 4, 4, 4, sites=True)
+    good = sorted([r for r in res if solid(r) and sites_ok(r)], key=eff)  # ارتقا هیچ‌وقت به سروری نمی‌ره که یوتیوب/اینستاگرام/تلگرام رو باز نکنه
     if not good or eff(good[0]) > 0.6 * med or GEN[0] != gen or STOP.is_set():
         return
     prev = list(POOL["active"])
@@ -814,6 +827,8 @@ SITE_FA = {"yt": "یوتیوب", "ig": "اینستاگرام", "tg": "تلگرا
 
 
 FULL = 15  # امتیاز سروری که هر سه سایت رو باز می‌کنه
+SITE_FRESH = 900  # نتیجه‌ی تست سایت‌ها تا ۱۵ دقیقه برای جابه‌جایی سریع معتبره
+SITE_EVERY, SITE_RETEST = 60, 600  # هر چند ثانیه سرور فعال چک بشه | هر چند ثانیه جایگزین‌ها دوباره سنجیده بشن
 
 
 def sites_score(c):
@@ -854,17 +869,210 @@ def site_tiers(cache):
     return t
 
 
+# ------------------------------------------------------------ یادگیری محلی
+# فقط روی همین دستگاه و بدون اینترنت. به‌جای آدرس سرورها، فقط شمارنده‌ی ویژگی‌ها نگه داشته می‌شه
+# (پروتکل، ترنسپورت، پورت، بازه‌ی ساعت، آدرس منبع عمومی) تا برنامه یاد بگیره روی شبکه‌ی تو چی جواب می‌ده.
+LEARN_FILE = DATA / "learn.json"
+LEARN = {"f": {}, "runs": 0, "disc_t": 0.0, "disc_ok": True}  # f[ویژگی] = [تست‌شده، سالم، تست‌سایت، پاس‌سایت]
+_learn_lock = threading.Lock()
+_learn_state = {"dirty": False, "saved": 0.0}
+PORTS_COMMON = (443, 80, 8443, 2053, 2083, 2087, 2096, 8080, 8880)
+LEARN_PRIOR = 0.25  # ویژگی‌ای که هنوز تجربه‌ای ازش نداریم، خنثی حساب می‌شه
+
+
+def learn_load():
+    try:
+        d = json.loads(LEARN_FILE.read_text(encoding="utf-8"))
+        if isinstance(d, dict) and isinstance(d.get("f"), dict):
+            LEARN["f"] = {str(k): [float(x) for x in v[:4]] for k, v in d["f"].items()
+                          if isinstance(v, list) and len(v) >= 4}
+            LEARN["runs"] = int(d.get("runs", 0))
+            LEARN["disc_t"], LEARN["disc_ok"] = float(d.get("disc_t", 0)), bool(d.get("disc_ok", True))
+    except Exception:
+        pass
+
+
+def learn_save(force=False):
+    if not _learn_state["dirty"] or (not force and time.time() - _learn_state["saved"] < 30):
+        return
+    try:
+        with _learn_lock:
+            data = json.dumps({"v": 1, "runs": LEARN["runs"], "f": LEARN["f"], "disc_t": LEARN["disc_t"], "disc_ok": LEARN["disc_ok"]}, ensure_ascii=False)
+            _learn_state.update(dirty=False, saved=time.time())
+        DATA.mkdir(parents=True, exist_ok=True)
+        _atomic(LEARN_FILE, data)
+    except Exception:
+        pass
+
+
+def learn_reset():
+    with _learn_lock:
+        LEARN["f"], LEARN["runs"] = {}, 0
+        _learn_state["dirty"] = False
+    try:
+        LEARN_FILE.unlink()
+    except OSError:
+        pass
+
+
+def learn_keys(c):
+    pt = c.get("port")
+    ks = ["p:" + str(c.get("proto") or ""), "n:" + str(c.get("network") or ""), "s:" + str(c.get("security") or ""),
+          "o:" + (str(pt) if pt in PORTS_COMMON else "other"),
+          f"t:{time.localtime().tm_hour // 4}:{c.get('proto')}:{c.get('network')}"]  # ساعت روز هم اثر داره
+    if c.get("srcurl"):
+        ks.append("u:" + str(c["srcurl"])[:120])
+    return ks
+
+
+def learn_record(c, kind):
+    """kind='live': آیا این سرور اصلاً کار کرد؟  kind='site': (فقط برای سالم‌ها) آیا همه‌ی سایت‌های لازم رو باز کرد؟"""
+    try:
+        with _learn_lock:
+            for k in learn_keys(c):
+                v = LEARN["f"].setdefault(k, [0.0, 0.0, 0.0, 0.0])
+                if kind == "live":
+                    v[0] += 1
+                    v[1] += 1 if c.get("alive") else 0
+                else:
+                    v[2] += 1
+                    v[3] += 1 if sites_ok(c) else 0
+                if v[0] > 400 or v[2] > 200:  # تجربه‌ی قدیمی کم‌کم کم‌اثر می‌شه؛ شبکه عوض می‌شه
+                    v[:] = [x / 2 for x in v]
+            _learn_state["dirty"] = True
+        learn_save()
+    except Exception:
+        pass
+
+
+def learn_score(c):
+    """احتمال تخمینی اینکه این سرور هم کار کنه هم سایت‌های لازم رو باز کنه (۰ تا ۱)."""
+    ar, sr = [], []
+    f = LEARN["f"]
+    for k in learn_keys(c):
+        v = f.get(k)
+        ar.append((v[1] + 1) / (v[0] + 4) if v else LEARN_PRIOR)
+        sr.append((v[3] + 1) / (v[2] + 4) if v else LEARN_PRIOR)
+    return (sum(ar) / len(ar)) * (sum(sr) / len(sr))
+
+
+def learn_order(c):
+    """کلید مرتب‌سازی: امیدوارکننده‌ترها اول. کمی تصادفی (حدود ±۲۵٪) تا برنامه همیشه چیزهای تازه رو هم امتحان کنه."""
+    return -learn_score(c) * random.uniform(0.75, 1.25)
+
+
+def learn_summary():
+    f = LEARN["f"]
+    tot = lambda i: int(sum(v[i] for k, v in f.items() if k.startswith("p:")))
+    if not f:
+        return None
+
+    def best(prefix, n=1, min_site=5):
+        rows = [(((v[3] + 1) / (v[2] + 4)), k[len(prefix):]) for k, v in f.items() if k.startswith(prefix) and v[2] >= min_site]
+        return [x[1] for x in sorted(rows, reverse=True)[:n] if x[0] > LEARN_PRIOR]
+    return dict(tested=tot(0), alive=tot(1), sitetested=tot(2), passed=tot(3), runs=LEARN["runs"],
+                proto=best("p:"), network=best("n:"), port=best("o:"), source=best("u:", 1, 3))
+
+
+learn_load()
+
+
+
+# ------------------------------------------------------------ جستجوی خودکار منبع
+AUTO_MAX = 25                        # حداکثر منبع خودکار
+DISC_EVERY, DISC_RETRY = 12 * 3600, 3600
+DISC = {"t": 0, "msg": "", "added": 0, "running": False}
+_disc_lock = threading.Lock()
+
+
+def source_v(url):
+    return LEARN["f"].get("u:" + str(url)[:120])
+
+
+def source_yield(url):
+    """کیفیت یک منبع از تجربه‌ی خودمون: احتمال اینکه سرورش کار کنه × احتمال اینکه همه‌ی سایت‌ها رو باز کنه. بدون داده: خنثی."""
+    v = source_v(url)
+    return ((v[1] + 1) / (v[0] + 4) * (v[3] + 1) / (v[2] + 4)) if v else LEARN_PRIOR * LEARN_PRIOR
+
+
+def discover_sources(force=False):
+    """بعد از اتصال (از داخل تونل، چون api.github.com هم ممکنه فیلتر باشه) ریپوهای تازه‌ی گیت‌هاب رو می‌گرده.
+    هر فایل کاندید جداگانه دانلود می‌شه و فقط اگه حداقل ۳۰ کانفیگ قابل‌خوندن داشته باشه به‌عنوان منبع خودکار اضافه می‌شه."""
+    if not _disc_lock.acquire(blocking=False):
+        return
+    try:
+        if not force and (load_settings().get("autosrc") is False or STOP.is_set()
+                          or time.time() - LEARN["disc_t"] < (DISC_EVERY if LEARN["disc_ok"] else DISC_RETRY)):
+            return
+        DISC.update(running=True, msg="در حال جستجوی منبع تازه توی گیت‌هاب ...")
+        ctx = cfgscan._ssl_ctx()
+        direct, via = cfgscan._openers(ctx, HTTP if XRAY_PROC else None)
+        urls, info = cfgscan.discover_github(via or direct, stop=STOP.is_set)
+        have = {x["url"] for x in load_db()["sources"]} | set(load_db().get("removed", []))
+        cand = [u for u in dict.fromkeys(urls) if u not in have][:12]
+        added = 0
+        for u in cand:
+            if STOP.is_set():
+                break
+            links, _ = cfgscan.fetch_sources([u], per_source=3000, log=lambda m: None, stop=STOP.is_set,
+                                             proxy_port=HTTP if XRAY_PROC else None, deadline=40)
+            if len(links) >= 30:
+                db = load_db()
+                if u not in {x["url"] for x in db["sources"]}:
+                    now = int(time.time())
+                    db["sources"].append({"url": u, "on": True, "got": len(links), "alive": 0, "kind": "auto", "last_ok": now, "added": now})
+                    save_db(db)
+                    added += 1
+        db = load_db()
+        autos = [x for x in db["sources"] if x.get("kind") == "auto"]
+        if len(autos) > AUTO_MAX:  # بدترین‌ها اول حذف می‌شن (و دوباره پیشنهاد نمی‌شن)
+            for x in sorted(autos, key=lambda x: source_yield(x["url"]))[:len(autos) - AUTO_MAX]:
+                db["sources"].remove(x)
+                db.setdefault("removed", []).append(x["url"])
+            save_db(db)
+        ok = not (info["rate"] and not urls) and not (info["err"] and not urls)
+        LEARN["disc_t"], LEARN["disc_ok"] = time.time(), ok
+        _learn_state["dirty"] = True
+        learn_save(True)
+        DISC.update(t=int(time.time()), added=added,
+                    msg=(f"{added} منبع تازه اضافه شد ({len(urls)} فایل کاندید بررسی شد)." if ok else
+                         ("محدودیت نرخ گیت‌هاب؛ یک ساعت دیگه دوباره امتحان می‌کنم." if info["rate"] else "به گیت‌هاب نرسیدم؛ یک ساعت دیگه دوباره امتحان می‌کنم.")))
+    except Exception:
+        LEARN["disc_t"], LEARN["disc_ok"] = time.time(), False
+        DISC["msg"] = "جستجو با خطا تموم شد؛ بعداً دوباره امتحان می‌کنم."
+    finally:
+        DISC["running"] = False
+        _disc_lock.release()
+
+
+def prune_sources():
+    """منبع خودکاری که کلی سرور ازش تست شده ولی هیچ‌وقت هیچ سروری که شرط سایت‌ها رو داشته باشه نداده، غیرفعال می‌شه.
+    منبع‌های خودت (پیش‌فرض، کانال، دستی) هیچ‌وقت خودکار غیرفعال نمی‌شن."""
+    try:
+        db, ch = load_db(), False
+        for x in db["sources"]:
+            v = source_v(x["url"]) if x.get("kind") == "auto" and x.get("on") else None
+            if v and v[0] >= 200 and v[3] == 0 and v[1] / v[0] < 0.03:
+                x["on"], x["auto_off"], ch = False, True, True
+        if ch:
+            save_db(db)
+    except Exception:
+        pass
+
+
 def sites_pick(found, cache):
     """سرورهای سالمی که واقعاً همه‌ی سایت‌های لازم رو باز می‌کنن (بهترین اول). سرورهای تازه همین‌جا تست می‌شن؛
     نتیجه‌ی ناموفق بعد از ۴ دقیقه دوباره امتحان می‌شه تا یک کندی لحظه‌ای سرور خوب رو برای همیشه رد نکنه."""
     now = time.time()
-    fresh = [c for c in sorted(list(found), key=ping_key)
+    fresh = [c for c in sorted(list(found), key=lambda c: (round(learn_order(c), 1), ping_key(c)))
              if c["raw"] not in cache or (not sites_ok(cache[c["raw"]]) and now - cache[c["raw"]].get("site_t", 0) > 240)][:8]
     if fresh:
         S.update(step=4, msg=f"تست دسترسی به یوتیوب، اینستاگرام و تلگرام روی {len(fresh)} سرور سالم ...")
         for c, r in zip(fresh, check_many(fresh, 1, 5, 8, sites=True)):
             r["site_t"] = now
             cache[c["raw"]] = r
+            if r.get("alive"):
+                learn_record(r, "site")
     live_ = [r for r in list(cache.values()) if r.get("alive") and not danger(r)]
     return sorted([r for r in live_ if sites_ok(r)], key=lambda r: (-sites_score(r), ping_key(r)))[:8]
 
@@ -875,7 +1083,8 @@ def _pull_candidates(found, tried, n):
     for c in list(found) + list(POOL["standby"]):
         if c["raw"] not in tried and not danger(c):
             uniq.setdefault(c["raw"], c)
-    cand = sorted(uniq.values(), key=rk)[:n]
+    now = time.time()  # اول سرورهایی که تازه (کمتر از SITE_FRESH ثانیه پیش) هر سایت لازم رو باز کرده‌ن؛ جابه‌جایی وقتی یوتیوب افتاد سریع‌تر می‌شه
+    cand = sorted(uniq.values(), key=lambda c: (not (sites_ok(c) and now - c.get("site_t", 0) < SITE_FRESH), rk(c)))[:n]
     if cand:
         return cand
     out = []
@@ -907,16 +1116,26 @@ def sites_guard(gen, profile, found):
 
 
 def sites_watch(gen, profile, found):
-    """هر ۵ دقیقه دسترسی به سه سایت رو از داخل تونل دوباره چک می‌کنه. اگه سرور خوب بعداً خراب شد
-    (مثلاً اینستاگرام بسته شد) خودش بدون دخالت تو سرور بهتری پیدا می‌کنه و جابه‌جا می‌شه."""
+    """هر SITE_EVERY ثانیه (۶۰) دسترسی به سه سایت رو از داخل تونل دوباره چک می‌کنه. اگه سرور خوب بعداً خراب شد
+    (مثلاً یوتیوب بسته شد) بعد از یک تأیید دوباره، خودش بدون دخالت تو سرور بهتری پیدا می‌کنه و جابه‌جا می‌شه.
+    قبلاً این چک هر ۵ دقیقه بود و یوتیوبِ از کار افتاده تا ۵ دقیقه بی‌خبر می‌موند."""
     try:
         while True:
-            for _ in range(60):
+            for _ in range(SITE_EVERY // 5):
                 if GEN[0] != gen or STOP.is_set():
                     return
                 time.sleep(5)
-            if S["stage"] != "connected" or not POOL["active"]:
+            if S["stage"] == "connected" and not DISC["running"] and time.time() - LEARN["disc_t"] > 20:
+                threading.Thread(target=discover_sources, daemon=True).start()  # اگه موعدش نشده باشه فوراً برمی‌گرده
+            if S["stage"] != "connected" or not POOL["active"] or GUARD_LOCK.locked():
+                continue  # وصل نیستیم، یا یک جستجوی جابه‌جایی همین الان در جریانه
+            r = cfgscan.site_check(SOCKS, 5)
+            POOL["sites"] = r
+            if sites_ok({"sites": r}):
                 continue
+            time.sleep(6)  # یک کندی یا خطای لحظه‌ای نباید جابه‌جایی بسازه؛ دوباره می‌سنجیم
+            if GEN[0] != gen or STOP.is_set():
+                return
             r = cfgscan.site_check(SOCKS, 5)
             POOL["sites"] = r
             if not sites_ok({"sites": r}):
@@ -983,12 +1202,17 @@ def standby_sites(gen):
     اونایی که باز نمی‌کنن از لیست جایگزین‌ها حذف می‌شن تا جابه‌جایی خودکار هیچ‌وقت به سرور بی‌فایده نپره."""
     try:
         while GEN[0] == gen and not STOP.is_set():
-            todo = [c for c in list(POOL["standby"]) if "sites" not in c][:6]
+            now = time.time()  # تازه‌ها یا اونایی که نتیجه‌ی سایتشون از SITE_RETEST ثانیه قدیمی‌تره (سرور وسط راه ممکنه خراب شده باشه)
+            todo = sorted([c for c in list(POOL["standby"]) if "sites" not in c or now - c.get("site_t", 0) > SITE_RETEST],
+                          key=lambda c: c.get("site_t", 0))[:6]
             if not todo:
                 time.sleep(5)
                 continue
             okl = []
             for o, r in zip(todo, check_many(todo, 1, 5, 6, sites=True)):
+                if r.get("alive"):
+                    learn_record(r, "site")
+                o["site_t"] = time.time()
                 if r.get("alive") and sites_ok(r):
                     o["sites"] = r["sites"]
                     okl.append(o)
@@ -1185,6 +1409,8 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
                         try_variants(c, xray, tmo[1])
                 c["tested"] = True
             finally:
+                if c.get("tested"):
+                    learn_record(c, "live")
                 q.put(c)
 
         add_lock, old_lock, old_added, ended = threading.Lock(), threading.Lock(), [False], [False]
@@ -1210,6 +1436,7 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
                 seen.add(k)
                 cfgscan.static(c)
                 c["src"] = tag
+                c["srcurl"] = origin.get(l, "") if tag == "net" else ""
                 if "blocklisted" in c["flags"]:
                     blk[0] += 1
                     continue
@@ -1224,7 +1451,7 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
                         or (P["only_encrypted"] and c["flags"] & STRICT_BAD)):
                     continue
                 parsed.append(c)
-            parsed.sort(key=lambda c: "no_tls" in c["flags"])
+            parsed.sort(key=lambda c: ("no_tls" in c["flags"], learn_order(c)))  # امیدوارکننده‌ترها (طبق تجربه‌ی قبلی) اول تست می‌شن
             for c in parsed:
                 cands.append(c)
                 if ended[0]:
@@ -1465,6 +1692,10 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
             report.save(STATS_FILE, CUM)
         except Exception:
             pass
+        LEARN["runs"] += 1
+        _learn_state["dirty"] = True
+        learn_save(True)
+        prune_sources()
         for c in found:
             for s in db["sources"]:
                 if c["raw"] in origin and s["url"] == origin[c["raw"]]:
@@ -1523,15 +1754,21 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
             S["note"] = "در حال بررسی دقیق سرورها ..."
             others = [c for c in ranked if c["raw"] != cur[0]["raw"]]
             nfix = 12 if profile == "speed" else 8
+            def known_bad(c):  # همین چند دقیقه‌ی پیش تست سایت شده و رد شده؛ دوباره وقت صرفش نمی‌کنیم
+                r = site_cache.get(c["raw"])
+                return bool(r and time.time() - r.get("site_t", 0) < SITE_FRESH and not sites_ok(r))
+            others = [c for c in others if not known_bad(c)]
             top = others[:nfix] + random.sample(others[nfix:], min(4, len(others[nfix:]))) + [cur[0]]
+            # sites=True: قبلاً این مرحله فقط تأخیر/سرعت می‌سنجید و می‌تونست از سروری که یوتیوب رو باز می‌کرد به سرور سریع‌ترِ بی‌یوتیوب بپره
             if profile == "speed":  # هم‌زمانی کم و نمونه‌ی بلندتر: مقایسه‌ی منصفانه‌ی سرعت
-                ver = check_many(top, ROUNDS.get(profile, 3), 5, 2, speed=True, secs=3.0)
+                ver = check_many(top, ROUNDS.get(profile, 3), 5, 2, speed=True, secs=3.0, sites=True)
             else:
-                ver = check_many(top, ROUNDS.get(profile, 3), 5, 4, speed=True, secs=2.0)
+                ver = check_many(top, ROUNDS.get(profile, 3), 5, 4, speed=True, secs=2.0, sites=True)
             if STOP.is_set():
                 return
-            okc = sorted([r for r in ver if solid(r, need_ok())], key=rk)
+            okc = sorted([r for r in ver if solid(r, need_ok()) and sites_ok(r)], key=rk)
             curv = next((r for r in ver if r["raw"] == cur[0]["raw"]), None)
+            cur_ok = bool(curv and solid(curv, need_ok()) and sites_ok(curv))
             if mode == "fast" and len(okc) > 1:
                 res = connect_ladder(okc, profile, POOL_SIZE)
                 if res:
@@ -1544,7 +1781,7 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
                 best = okc[0] if okc else None
                 if curv and solid(curv, need_ok()):
                     POOL["active"] = [curv]  # همون سرور فعلی، با اندازه‌گیری‌های دقیق‌تر
-                if best and best["raw"] != cur[0]["raw"] and (not (curv and solid(curv, need_ok())) or (rk(best) < rk(curv) and cost(best) < 0.75 * cost(curv))):
+                if best and best["raw"] != cur[0]["raw"] and (not cur_ok or (rk(best) < rk(curv) and cost(best) < 0.75 * cost(curv))):
                     sel = start_xray([best], profile)
                     ms = probe_retry(3, 4)
                     if ms:
@@ -1597,7 +1834,11 @@ def state():
     d["ports"] = [SOCKS, HTTP]
     d["profile"] = CUR[0]
     d["settings"] = load_settings()
-    d["tgonly"], d["tiers"] = TGONLY[0], POOL.get("tiers")
+    d["tgonly"], d["tiers"], d["learn"] = TGONLY[0], POOL.get("tiers"), learn_summary()
+    d["disc"] = dict(DISC, last=LEARN["disc_t"])
+    d["autosrc"] = [dict(url=x["url"], got=x.get("got", 0), on=bool(x.get("on")), off=bool(x.get("auto_off")),
+                         tested=int((source_v(x["url"]) or [0])[0]), passed=int((source_v(x["url"]) or [0, 0, 0, 0])[3]))
+                    for x in d["sources"] if x.get("kind") == "auto"]
     return d
 
 
@@ -1664,7 +1905,7 @@ class H(http.server.BaseHTTPRequestHandler):
         if self.headers.get("Sec-Fetch-Site", "same-origin") not in ("same-origin", "none"):
             return False
         t = q.get("t", [""])[0] or self.headers.get("X-T", "")
-        return secrets.compare_digest(t, TOKEN)
+        return secrets.compare_digest(t.encode("utf-8", "replace"), TOKEN.encode())  # بایت؛ با رشته‌ی غیر ASCII خود compare_digest خطا می‌داد
 
     def do_GET(self):
         u = urllib.parse.urlsplit(self.path)
@@ -1723,6 +1964,13 @@ class H(http.server.BaseHTTPRequestHandler):
                                                            j.get("mode") if j.get("mode") in ("stable", "fast", "off") else "stable"),
                                     daemon=True)
             PIPE.start()
+        elif p == "/api/discover":
+            if S["stage"] == "connected" and not DISC["running"]:
+                threading.Thread(target=discover_sources, kwargs={"force": True}, daemon=True).start()
+            else:
+                DISC["msg"] = "اول به اینترنت وصل شو (جستجو از داخل تونل انجام می‌شه)."
+        elif p == "/api/learn_reset":
+            learn_reset()
         elif p == "/api/stop":
             STOP.set()
             if S["stage"] != "running":
@@ -1743,7 +1991,7 @@ class H(http.server.BaseHTTPRequestHandler):
             S.update(stage="idle", step=0, pct=0, msg="نتایج پاک شد", connected=None, log=[])
         elif p == "/api/import":
             text = str(j.get("text", ""))[:2_000_000]
-            ls = cfgscan.extract_links(text)
+            ls = cfgscan.extract_links(text)[:20000]  # سقف؛ متن مخرب نتونه میلیون‌ها لینک بسازه
             urls = cfgscan.sub_urls(text, ls)  # لینک ساب‌اسکریپشن (https) هم قبول می‌شه؛ یک بار دریافت و کانفیگ‌هاش ذخیره می‌شه
             if urls:
                 ca = HERE / "cacert.pem"
@@ -1790,7 +2038,9 @@ class H(http.server.BaseHTTPRequestHandler):
         elif p == "/api/delsource":
             url = str(j.get("url", ""))
             db = load_db()
-            db["sources"] = [x for x in db["sources"] if not (x["url"] == url and x.get("kind") == "channel")]
+            if any(x["url"] == url and x.get("kind") == "auto" for x in db["sources"]):
+                db.setdefault("removed", []).append(url)  # دوباره پیشنهاد نشه
+            db["sources"] = [x for x in db["sources"] if not (x["url"] == url and x.get("kind") in ("channel", "auto"))]
             save_db(db)
             return self.reply(200, {"ok": True})
         elif p == "/api/closing":
@@ -2082,12 +2332,34 @@ def watchdog():
             quit_app()
 
 
+def _proc_is_ours(pid):
+    """PID ذخیره‌شده بعد از کرش یا ریبوت ممکنه به برنامه‌ی دیگه‌ای رسیده باشه؛ فقط اگه واقعاً xray یا sing-box است بکش."""
+    try:
+        if ANDROID:
+            return any(k in Path(f"/proc/{pid}/cmdline").read_bytes() for k in (b"libxray", b"libsingbox"))
+        if os.name == "nt":
+            r = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"], capture_output=True, timeout=8,
+                               creationflags=0x08000000)
+            out = r.stdout.decode("mbcs", "replace").lower()
+            return any(f'"{n}.exe"' in out for n in ("xray", "sing-box"))
+        p = Path(f"/proc/{pid}/cmdline")
+        if p.exists():
+            name = os.path.basename(p.read_bytes().split(b"\0")[0].decode("utf-8", "replace"))
+        else:  # مک
+            name = os.path.basename(subprocess.run(["ps", "-p", str(pid), "-o", "comm="], capture_output=True, timeout=8)
+                                    .stdout.decode().strip())
+        return name in ("xray", "sing-box")
+    except Exception:
+        return False
+
+
 def main():
     global PORT, TOKEN, _lock
     DATA.mkdir(parents=True, exist_ok=True)
     try:  # xray یتیمِ دفعه‌ی قبل (اگه برنامه ناگهانی بسته شده) پورت رو اشغال نکنه
         pid = int((DATA / "xray.pid").read_text(encoding="utf-8").strip())
-        if ANDROID and not any(k in Path(f"/proc/{pid}/cmdline").read_bytes() for k in (b"libxray", b"libsingbox")):
+        if not _proc_is_ours(pid):
+            (DATA / "xray.pid").unlink()
             raise OSError("not ours")  # شناسه‌ی فرایند عوض شده؛ چیز دیگه‌ای رو نکش
         if os.name == "nt":
             subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True, creationflags=0x08000000)

@@ -101,7 +101,7 @@ def p_url(link, sch):
     u = urllib.parse.urlsplit(link)
     q = {k: v[0] for k, v in urllib.parse.parse_qs(u.query).items()}
     ident = urllib.parse.unquote(u.username or "")
-    sec = (q.get("security") or ("tls" if sch == "trojan" else "none")).lower()
+    sec = clean(q.get("security") or ("tls" if sch == "trojan" else "none"), 20).lower()
     return mk(proto=sch, host=clean(u.hostname), port=u.port or 0,
               id=clean(ident) if sch == "vless" else "", pw=clean(ident) if sch == "trojan" else "",
               network=clean(q.get("type") or "tcp", 20).lower(), security=sec,
@@ -194,8 +194,11 @@ def parse(link):
     return c
 
 
+_LINK_RE = re.compile(r"(?:vmess|vless|trojan|ss|hysteria2|hy2|tuic|anytls)://[^\s\"'<>]+")
+
+
 def _links_in(t):
-    return re.findall(r"(?:vmess|vless|trojan|ss|hysteria2|hy2|tuic|anytls)://[^\s\"'<>]+", _html.unescape(t))  # unescape: صفحه‌هایی مثل t.me/s/کانال
+    return _LINK_RE.findall(_html.unescape(t))  # unescape: صفحه‌هایی مثل t.me/s/کانال
 
 
 def extract_links(text):
@@ -211,9 +214,8 @@ def extract_links(text):
 
 def sub_urls(text, links=()):
     """آدرس‌های https توی متن (لینک ساب‌اسکریپشن یا کانال). آدرس‌هایی که داخل خود لینک کانفیگ‌هان (مثلاً توی remark) حساب نمی‌شن."""
-    rest = text
-    for l in links:
-        rest = rest.replace(l, " ")
+    # یک بار و خطی؛ قبلاً برای هر لینک کل متن دوباره پیمایش می‌شد (۵۰ هزار لینک روی ۵ مگابایت = ۱۳۶ ثانیه)
+    rest = _LINK_RE.sub(" ", _html.unescape(text)) if links else text
     found = (m.rstrip(".,;،") for m in re.findall(r"https://[^\s\"'<>]+", rest))
     return list(dict.fromkeys(u for u in found if public_url(u)))[:5]
 
@@ -228,10 +230,14 @@ def public_url(u):
     if not h or h == "localhost" or h.endswith((".local", ".localhost", ".internal")):
         return False
     if is_ip(h):
-        ip = ipaddress.ip_address(h)
-        return not (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
-                    or ip.is_multicast or ip.is_unspecified)
+        return not non_public(ipaddress.ip_address(h))
     return "." in h
+
+
+def non_public(ip):
+    """هر آدرسی که روی اینترنت عمومی نیست: خصوصی، loopback، link-local (مثل 169.254.169.254)، CGNAT (100.64/10)،
+    رزرو/مستندات و multicast. قبلاً CGNAT و چند بازه‌ی دیگه رد می‌شدن چون is_private برشون نمی‌گیره."""
+    return (not ip.is_global) or ip.is_multicast or ip.is_unspecified
 
 
 # ---------------------------------------------------------------- کانال و گروه‌های عمومی پیام‌رسان‌ها به‌عنوان منبع
@@ -299,7 +305,7 @@ def follow_candidates(text):
         h = (p.hostname or "").lower()
         if h in CHANNEL_HOSTS or h.endswith(".telegram.org") or h == "telegram.org":
             continue
-        if h in FOLLOW_HOSTS or "/sub" in p.path.lower():
+        if (h in FOLLOW_HOSTS or "/sub" in p.path.lower()) and public_url(u):  # لینک داخل پیام (کنترل‌شده توسط صاحب کانال) نباید ما رو به localhost/شبکه‌ی داخلی بفرسته
             out.append(u)
     return list(dict.fromkeys(out))[:6]
 
@@ -421,6 +427,7 @@ def static(c):
             f.add("unsupported")
     elif (c["network"] not in NETS or c["security"] not in ("none", "tls", "reality") or c["plugin"]
           or c["ech"]  # ECH توی build_xray پیاده نشده؛ بدونش تست بی‌معنیه
+          or "downloadsettings" in c["extra"].lower()  # آدرس دومِ بررسی‌نشده؛ ایمن نیست
           or (c["network"] == "tcp" and c["hdr"] == "http")  # مبهم‌سازی HTTP روی TCP پیاده نشده
           or (c["proto"] == "vless" and c["enc"] not in ("", "none"))):  # رمزنگاری vless (مثل mlkem) پیاده نشده
         f.add("unsupported")
@@ -440,7 +447,7 @@ def static(c):
         f.add("blocklisted")
     if is_ip(c["host"]):
         ip = ipaddress.ip_address(c["host"])
-        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_unspecified:
+        if non_public(ip):
             f.add("private_addr")
     c["flags"] = f
     return c
@@ -453,29 +460,52 @@ def reach(c, timeout=4):
         infos = socket.getaddrinfo(c["host"], c["port"], type=socket.SOCK_STREAM)
     except OSError:
         return c
-    for i in infos:
-        ip = ipaddress.ip_address(i[4][0].split("%")[0])
-        if (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
-                or ip.is_multicast or ip.is_unspecified):
+    ips = list(dict.fromkeys(i[4][0].split("%")[0] for i in infos))
+    ips.sort(key=lambda a: ":" in a)  # IPv4 اول: روی خیلی از شبکه‌ها IPv6 کار نمی‌کنه و xray هم همون آی‌پی انتخاب‌شده رو می‌گیره
+    for a in ips:
+        ip = ipaddress.ip_address(a)
+        if non_public(ip):
             c["flags"].add("private_addr")
             return c
         if BLOCK.contains(ip):  # قبل از هر اتصالی؛ آنتی‌ویروس هم همین آدرس‌ها رو می‌بنده
             c["flags"].add("blocklisted")
             return c
-    c["ip"] = infos[0][4][0].split("%")[0]  # همین آی‌پیِ بررسی‌شده توی کانفیگ می‌ره (جلوگیری از DNS rebinding)
+    c["ip"] = ips[0]  # همین آی‌پیِ بررسی‌شده توی کانفیگ می‌ره (جلوگیری از DNS rebinding)
     if c["proto"] in ("hysteria2", "tuic"):  # UDP: با TCP نمی‌شه سنجید؛ تست واقعی خودش تصمیم می‌گیره
         c["reachable"], c["tcp_ms"] = True, None
         return c
-    t0 = time.time()
-    try:
-        socket.create_connection((c["host"], c["port"]), timeout=timeout).close()
-        c["reachable"], c["tcp_ms"] = True, int((time.time() - t0) * 1000)
-    except OSError:
-        pass
+    for a in ips:  # فقط به آی‌پی‌های همین بررسی وصل می‌شیم (قبلاً اسم دوباره resolve می‌شد و می‌تونست جواب دیگه‌ای بده)
+        t0 = time.time()
+        try:
+            socket.create_connection((a, c["port"]), timeout=timeout).close()
+            c["ip"], c["reachable"], c["tcp_ms"] = a, True, int((time.time() - t0) * 1000)
+            break
+        except OSError:
+            continue
     return c
 
 
 # ---------------------------------------------------------------- live test via xray
+XHTTP_EXTRA_OK = {"headers", "xPaddingBytes", "noGRPCHeader", "noSSEHeader", "scMaxEachPostBytes", "scMinPostsIntervalMs",
+                  "scMaxBufferedPosts", "scStreamUpServerSecs", "xmux", "uplinkHTTPMethod", "xPaddingKey", "xPaddingHeader",
+                  "xPaddingPlacement", "xPaddingMethod", "sessionPlacement", "sessionKey", "seqPlacement", "seqKey",
+                  "uplinkDataPlacement", "uplinkDataKey", "uplinkChunkSize"}
+
+
+def safe_extra(ex):
+    """extra از لینک ناشناس می‌آد. فقط گزینه‌های تنظیمی ساده؛ downloadSettings (یک آدرس و پورت دلخواه که xray بهش وصل می‌شه،
+    مثلاً 127.0.0.1 یا روتر) و هر چیز تو در تو دیگه حذف می‌شه."""
+    out = {}
+    for k, v in ex.items():
+        if k not in XHTTP_EXTRA_OK:
+            continue
+        if isinstance(v, (str, int, float, bool)):
+            out[k] = v
+        elif isinstance(v, dict) and k in ("headers", "xmux"):
+            out[k] = {a: b for a, b in v.items() if isinstance(a, str) and isinstance(b, (str, int, float, bool))}
+    return out
+
+
 def build_xray(c, port):
     if c["proto"] == "vmess":
         ob = {"protocol": "vmess", "settings": {"vnext": [{"address": c.get("ip") or c["host"], "port": c["port"], "users": [
@@ -511,7 +541,9 @@ def build_xray(c, port):
             try:
                 ex = json.loads(c["extra"]) if c["extra"] else None
                 if isinstance(ex, dict):
-                    xs["extra"] = ex
+                    ex = safe_extra(ex)
+                    if ex:
+                        xs["extra"] = ex
             except ValueError:
                 pass
             st["xhttpSettings"] = xs
@@ -620,7 +652,11 @@ def fetch(port, url, timeout, limit=65536):
                 break
             out, rest = out + rest[:n], rest[n + 2:]
         body = out
-    return int(head.split(b" ", 2)[1]), body, int((time.time() - t0) * 1000)
+    try:
+        status = int(head.split(b" ", 2)[1])
+    except (IndexError, ValueError):
+        raise ConnectionError("bad http response")
+    return status, body, int((time.time() - t0) * 1000)
 
 
 SPEED_BIG_URLS = ["https://speed.cloudflare.com/__down?bytes=20000000", "https://proof.ovh.net/files/10Mb.dat",
@@ -650,8 +686,8 @@ def _stream(port, url, secs, res, i, timeout):
             path = (u.path or "/") + ("?" + u.query if u.query else "")
             s.sendall(f"GET {path} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: Mozilla/5.0\r\nAccept: */*\r\n"
                       f"Accept-Encoding: identity\r\nConnection: close\r\n\r\n".encode())
-            buf = b""
-            while b"\r\n\r\n" not in buf and len(buf) < 16384:
+            buf, t_hdr = b"", time.time() + timeout * 2
+            while b"\r\n\r\n" not in buf and len(buf) < 16384 and time.time() < t_hdr:  # سرورِ قطره‌چکان نتونه نخ رو برای همیشه نگه داره
                 x = s.recv(8192)
                 if not x:
                     return
@@ -720,7 +756,7 @@ def site_check(port, timeout=5):
         for t in (timeout, timeout + 3):
             try:
                 st, _, _ = fetch(port, url, t)
-                if st < 500:
+                if st < 500 and st not in (403, 429):  # ۴۰۳/۴۲۹ یعنی گوگل/اینستاگرام این آی‌پی رو بسته یا محدود کرده؛ قبلاً «باز» حساب می‌شد
                     return True
             except Exception:
                 pass
@@ -988,6 +1024,133 @@ def attempts(u, via=False):
     return plan
 
 
+def _private_ip(ip):
+    ip = getattr(ip, "ipv4_mapped", None) or ip  # ::ffff:127.0.0.1 باید با بخش IPv4 خودش قضاوت بشه
+    return non_public(ip)  # خصوصی، loopback، link-local، CGNAT، رزرو و multicast
+
+
+class _SafeRedirect(urllib.request.HTTPRedirectHandler):
+    """ریدایرکت فقط به https و آدرس عمومی. قبلاً یک منبع (یا کانال) می‌تونست با 302 ما رو به http://127.0.0.1 ،
+    شبکه‌ی داخلی یا ftp:// بفرسته."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        nu = urllib.parse.urljoin(req.full_url, newurl)
+        if not nu.lower().startswith("https://") or not public_url(nu):
+            raise urllib.error.HTTPError(req.full_url, code, "unsafe redirect", headers, fp)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+class _GuardConn(http.client.HTTPSConnection):
+    """قبل از اتصال، همه‌ی IPهای نام رو می‌گیره و اگه داخلی بودن رد می‌کنه؛ به همون IP بررسی‌شده وصل می‌شه (DNS rebinding).
+    فقط برای اتصال مستقیم؛ مسیر پروکسی محلی از این رد نمی‌شه."""
+
+    def connect(self):
+        last = OSError("no address")
+        for fam, typ, proto, _, sa in socket.getaddrinfo(self.host, self.port, type=socket.SOCK_STREAM):
+            if _private_ip(ipaddress.ip_address(sa[0].split("%")[0])):
+                last = socket.gaierror("private address blocked")  # DNS آلوده‌ی بعضی شبکه‌ها؛ علتش «DNS خراب» حساب بشه
+                continue
+            s = socket.socket(fam, typ, proto)
+            try:
+                if self.timeout is not socket._GLOBAL_DEFAULT_TIMEOUT:
+                    s.settimeout(self.timeout)
+                s.connect(sa)
+            except OSError as e:
+                s.close()
+                last = e
+                continue
+            self.sock = self._context.wrap_socket(s, server_hostname=self.host)
+            return
+        raise last
+
+
+class _GuardHTTPS(urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        return self.do_open(_GuardConn, req, context=self._context)
+
+
+def safe_opener(ctx=None):
+    """اتصال مستقیم امن برای دریافت منبع‌ها: بدون پروکسی سیستم، IP داخلی رد، ریدایرکت فقط https عمومی."""
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}), _GuardHTTPS(context=ctx or ssl.create_default_context()),
+                                       _SafeRedirect())
+
+
+def _openers(ctx, proxy_port=None):
+    """(مستقیم، از طریق پروکسی محلی یا None)؛ هر دو با ریدایرکت امن. مستقیم: بدون پروکسی سیستم و با نگهبان DNS."""
+    hs, sr = urllib.request.HTTPSHandler(context=ctx), _SafeRedirect()
+    direct = safe_opener(ctx)
+    via = (urllib.request.build_opener(urllib.request.ProxyHandler(
+        {"https": f"http://127.0.0.1:{proxy_port}", "http": f"http://127.0.0.1:{proxy_port}"}), hs, sr) if proxy_port else None)
+    return direct, via
+
+
+GH_API = "https://api.github.com"
+DISC_QUERIES = ("v2ray free config", "vless vmess trojan subscription", "xray free servers list")
+_DISC_NAME = re.compile(r"(?i)(v2ray|vless|vmess|trojan|hysteria|hy2|tuic|shadowsocks|sub|config|mix|proxy|server|free|all|normal)")
+
+
+def discover_github(opener, log=lambda m: None, stop=None, max_repos=10, per_repo=5):
+    """ریپوهای تازه‌ی گیت‌هاب که فایل لیست کانفیگ دارن رو پیدا می‌کنه. (آدرس‌های raw، اطلاعات)
+    فقط پیشنهاده؛ هر آدرس قبل از اضافه شدن جداگانه دانلود و شمرده می‌شه. محدودیت نرخ API رو تشخیص می‌ده و متوقف می‌شه."""
+    stop = stop or (lambda: False)
+    info = {"rate": False, "err": "", "repos": 0}
+
+    def api(path):
+        rq = urllib.request.Request(GH_API + path, headers={"User-Agent": "ConfigTool", "Accept": "application/vnd.github+json"})
+        with opener.open(rq, timeout=15) as r:
+            return json.loads(r.read(2_000_000).decode("utf-8", "replace"))
+    since = time.strftime("%Y-%m-%d", time.gmtime(time.time() - 10 * 86400))
+    repos, seen = [], set()
+    for q in DISC_QUERIES:
+        if stop() or info["rate"]:
+            break
+        try:
+            d = api("/search/repositories?q=" + urllib.parse.quote(f"{q} pushed:>{since}") + "&sort=updated&order=desc&per_page=12")
+        except urllib.error.HTTPError as e:
+            if e.code in (403, 429):
+                info["rate"] = True
+            else:
+                info["err"] = f"http {e.code}"
+            continue
+        except Exception as e:
+            info["err"] = classify(e)
+            continue
+        for it in d.get("items") or []:
+            fn = str(it.get("full_name") or "")
+            if (not re.fullmatch(r"[\w.-]+/[\w.-]+", fn) or fn in seen or it.get("fork") or it.get("archived")
+                    or it.get("private") or not it.get("size")):
+                continue
+            seen.add(fn)
+            repos.append((fn, str(it.get("default_branch") or "main"), int(it.get("stargazers_count") or 0)))
+    repos = sorted(repos, key=lambda r: -r[2])[:max_repos]
+    urls = []
+    for fn, br, _ in repos:
+        if stop() or info["rate"]:
+            break
+        try:
+            t = api(f"/repos/{fn}/git/trees/{urllib.parse.quote(br)}?recursive=1")
+        except urllib.error.HTTPError as e:
+            info["rate"] = info["rate"] or e.code in (403, 429)
+            continue
+        except Exception as e:
+            info["err"] = classify(e)
+            continue
+        picked = []
+        for e in t.get("tree") or []:
+            path, size = str(e.get("path") or ""), int(e.get("size") or 0)
+            low = path.lower()
+            if (e.get("type") != "blob" or not low.endswith(".txt") or not 2000 <= size <= 3_000_000 or low.count("/") > 3
+                    or not _DISC_NAME.search(low.rsplit("/", 1)[-1])):
+                continue
+            picked.append((size, path))
+        for size, path in sorted(picked, reverse=True)[:per_repo]:
+            u = f"https://raw.githubusercontent.com/{fn}/{br}/" + "/".join(urllib.parse.quote(x) for x in path.split("/"))
+            if public_url(u):
+                urls.append(u)
+        info["repos"] += 1
+    return urls, info
+
+
 def fetch_sources(urls, per_source=400, log=print, origin=None, stop=None, proxy_port=None, deadline=60):
     """از چند منبع هم‌زمان می‌گیره. هر منبع چند راه داره و اولین موفق برنده‌ست. (links, آمار)"""
     import random
@@ -995,10 +1158,7 @@ def fetch_sources(urls, per_source=400, log=print, origin=None, stop=None, proxy
     from concurrent.futures import wait
     stop = stop or (lambda: False)
     ctx = _ssl_ctx()
-    hs = urllib.request.HTTPSHandler(context=ctx)
-    direct = urllib.request.build_opener(urllib.request.ProxyHandler({}), hs)
-    via = (urllib.request.build_opener(urllib.request.ProxyHandler(
-        {"https": f"http://127.0.0.1:{proxy_port}", "http": f"http://127.0.0.1:{proxy_port}"}), hs) if proxy_port else None)
+    direct, via = _openers(ctx, proxy_port)
     urls = [u for u in urls if re.match(r"^https://", u, re.I)]
     done = {u: threading.Event() for u in urls}
     got, errs = {}, {u: {} for u in urls}
