@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """cfgweb - هسته‌ی برنامه: سرور محلی + رابط وب (در پنجره‌ی مثل-اپ Edge/Chrome باز می‌شه).
 خودش کانفیگ‌ها رو از منابع GitHub پیدا می‌کنه، تست می‌کنه، تنظیمات می‌سازه و وصل می‌شه."""
-import atexit, base64, queue, struct, tempfile, http.server, json, os, random, secrets, shutil, socket, subprocess, sys, threading, time
+import atexit, base64, hashlib, math, queue, struct, tempfile, http.server, json, os, random, secrets, shutil, socket, subprocess, sys, threading, time
 import ipaddress, re, urllib.parse, urllib.request, webbrowser
 from concurrent.futures import ThreadPoolExecutor
 from collections import deque
@@ -12,6 +12,8 @@ ROOT = HERE.parent
 DATA = Path(os.environ.get("CFG_DATA") or ROOT / "data")
 sys.path.insert(0, str(HERE))
 import cfgscan, cfgforge, report  # noqa: E402
+
+http.server.ThreadingHTTPServer.request_queue_size = 128  # پیش‌فرض ۵ است؛ چند درخواست هم‌زمان از رابط، اتصال‌ها رو رها نکنه
 
 ANDROID = cfgscan.ANDROID  # CFG_ANDROID=1 را فقط پوسته‌ی اندروید تنظیم می‌کند
 
@@ -90,7 +92,13 @@ def load_db():
     try:
         db = json.loads(SRC_DB.read_text(encoding="utf-8"))
     except Exception:
-        db = {"sources": []}
+        db = {}
+    if not isinstance(db, dict):  # فایل خراب یا دستی‌ویرایش‌شده نباید برنامه رو از کار بندازه
+        db = {}
+    db["sources"] = [s for s in (db.get("sources") if isinstance(db.get("sources"), list) else [])
+                     if isinstance(s, dict) and isinstance(s.get("url"), str)]
+    if "removed" in db:
+        db["removed"] = [u for u in (db["removed"] if isinstance(db["removed"], list) else []) if isinstance(u, str)]
     have, removed, changed = {s["url"] for s in db["sources"]}, set(db.get("removed", [])), False
     for u in cfgscan.DEFAULT_SOURCES:  # منبع‌های جدیدِ نسخه‌های تازه خودکار اضافه می‌شن (مگر اینکه خودت حذفشون کرده باشی)
         if u not in have and u not in removed:
@@ -101,11 +109,20 @@ def load_db():
     return db
 
 
+_ATOMIC_LOCK = threading.Lock()
+
+
 def _atomic(path, text):
     """نوشتن امن: اگه برنامه وسط نوشتن بسته بشه، فایل قبلی سالم می‌مونه."""
-    tmp = Path(str(path) + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)
+    # نام tmp یکتا برای هر نخ + قفل: دو نوشتن هم‌زمان هم‌دیگر را خراب نکنند
+    tmp = Path(f"{path}.{os.getpid()}.{threading.get_ident()}.tmp")
+    with _ATOMIC_LOCK:
+        try:
+            tmp.write_text(text, encoding="utf-8")
+            os.replace(tmp, path)
+        finally:
+            try: tmp.unlink()
+            except OSError: pass
 
 
 def save_db(db):
@@ -136,12 +153,13 @@ def write_secret(path, text):
         try:
             data = b"DPAPI1" + _dpapi(data, True)
         except Exception:
-            pass
+            return False  # رمزگذاری نشد: متن ساده روی دیسک نمی‌نویسیم (فقط ذخیره‌ی این فایل رد می‌شه)
     Path(path).write_bytes(data)
     try:
         os.chmod(path, 0o600)
     except OSError:
         pass
+    return True
 
 
 def read_secret(path):
@@ -158,27 +176,33 @@ def read_links(path):
         return []
 
 
+def _in(v, allowed):
+    """مقدار از JSON ورودی ممکنه لیست یا دیکشنری باشه؛ `in` روی دیکشنری با مقدار نامعتبر (unhashable) خطا می‌ده."""
+    return isinstance(v, str) and v in allowed
+
+
 def load_settings():
     try:
-        return json.loads(SETTINGS.read_text(encoding="utf-8"))
+        d = json.loads(SETTINGS.read_text(encoding="utf-8"))
+        return d if isinstance(d, dict) else {}
     except Exception:
         return {}
 
 
 def save_settings(j):
     cur = load_settings()
-    if j.get("profile") in cfgforge.PROFILES:
+    if _in(j.get("profile"), cfgforge.PROFILES):
         cur["profile"] = j["profile"]
-    if j.get("mode") in ("stable", "fast", "off"):
+    if _in(j.get("mode"), ("stable", "fast", "off")):
         cur["mode"] = j["mode"]
-    if j.get("speed") in SPEEDS:
+    if _in(j.get("speed"), SPEEDS):
         cur["speed"] = j["speed"]
     for k in ("quick", "sysproxy", "tgonly", "autosrc"):
         if isinstance(j.get(k), bool):
             cur[k] = j[k]
     if isinstance(j.get("tgonly"), bool):
         TGONLY[0] = j["tgonly"]
-    if j.get("direct", "") in cfgforge.COUNTRY_DIRECT or j.get("direct") == "":
+    if _in(j.get("direct", ""), cfgforge.COUNTRY_DIRECT) or j.get("direct") == "":
         cur["direct"] = j.get("direct", "")
     DATA.mkdir(parents=True, exist_ok=True)
     _atomic(SETTINGS, json.dumps(cur))
@@ -873,21 +897,58 @@ def site_tiers(cache):
 # فقط روی همین دستگاه و بدون اینترنت. به‌جای آدرس سرورها، فقط شمارنده‌ی ویژگی‌ها نگه داشته می‌شه
 # (پروتکل، ترنسپورت، پورت، بازه‌ی ساعت، آدرس منبع عمومی) تا برنامه یاد بگیره روی شبکه‌ی تو چی جواب می‌ده.
 LEARN_FILE = DATA / "learn.json"
-LEARN = {"f": {}, "runs": 0, "disc_t": 0.0, "disc_ok": True}  # f[ویژگی] = [تست‌شده، سالم، تست‌سایت، پاس‌سایت]
+LEARN = {"f": {}, "s": {}, "runs": 0, "disc_t": 0.0, "disc_ok": True}  # f=تجربه‌ی خوب/بد  s=تجربه‌ی امنیتی (خطرناک بودن)  # f[ویژگی] = [تست‌شده، سالم، تست‌سایت، پاس‌سایت]
 _learn_lock = threading.Lock()
 _learn_state = {"dirty": False, "saved": 0.0}
 PORTS_COMMON = (443, 80, 8443, 2053, 2083, 2087, 2096, 8080, 8880)
 LEARN_PRIOR = 0.25  # ویژگی‌ای که هنوز تجربه‌ای ازش نداریم، خنثی حساب می‌شه
 
 
+LEARN_MAX_KEYS = 5000
+
+
+def _learn_vec(v):
+    """چهار شمارنده‌ی سالم یا None. فایل خراب یا دستی‌ویرایش‌شده (منفی، NaN، بی‌نهایت، موفق بیشتر از آزمایش)
+    نباید تقسیم بر صفر یا امتیاز بی‌معنی بسازه."""
+    import math
+    try:
+        x = [float(a) for a in v[:4]]
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if len(x) < 4 or not all(math.isfinite(a) and 0 <= a <= 1e6 for a in x):
+        return None
+    x[1], x[3] = min(x[1], x[0]), min(x[3], x[2])
+    return x
+
+
 def learn_load():
     try:
+        import math
         d = json.loads(LEARN_FILE.read_text(encoding="utf-8"))
         if isinstance(d, dict) and isinstance(d.get("f"), dict):
-            LEARN["f"] = {str(k): [float(x) for x in v[:4]] for k, v in d["f"].items()
-                          if isinstance(v, list) and len(v) >= 4}
-            LEARN["runs"] = int(d.get("runs", 0))
-            LEARN["disc_t"], LEARN["disc_ok"] = float(d.get("disc_t", 0)), bool(d.get("disc_ok", True))
+            f = {}
+            for k, v in d["f"].items():
+                if len(f) >= LEARN_MAX_KEYS:
+                    break
+                x = _learn_vec(v) if isinstance(v, list) else None
+                if str(k).startswith("u:") and not re.fullmatch(r"u:[0-9a-f]{16}", str(k)):
+                    x = None  # کلید خام قدیمیِ URL پاک می‌شه
+                if x is not None:
+                    f[str(k)[:160]] = x
+            LEARN["f"] = f
+            sd = {}
+            for k, v in (d.get("s") or {}).items():  # بخش امنیتی با همان سخت‌گیری: فقط عددهای متناهی و نامنفی، حداکثر LEARN_MAX_KEYS کلید
+                if len(sd) >= LEARN_MAX_KEYS:
+                    break
+                if (isinstance(v, list) and len(v) >= 2 and not str(k).startswith("t:")
+                        and all(isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x) and 0 <= x <= 1e7 for x in v[:2])
+                        and v[1] <= v[0]):
+                    sd[str(k)[:160]] = [float(v[0]), float(v[1])]
+            LEARN["s"] = sd
+            runs, dt = d.get("runs", 0), d.get("disc_t", 0)
+            LEARN["runs"] = int(runs) if isinstance(runs, (int, float)) and math.isfinite(runs) and 0 <= runs <= 10 ** 9 else 0
+            LEARN["disc_t"] = float(dt) if isinstance(dt, (int, float)) and math.isfinite(dt) and 0 <= dt <= 4e9 else 0.0
+            LEARN["disc_ok"] = bool(d.get("disc_ok", True))
     except Exception:
         pass
 
@@ -897,7 +958,7 @@ def learn_save(force=False):
         return
     try:
         with _learn_lock:
-            data = json.dumps({"v": 1, "runs": LEARN["runs"], "f": LEARN["f"], "disc_t": LEARN["disc_t"], "disc_ok": LEARN["disc_ok"]}, ensure_ascii=False)
+            data = json.dumps({"v": 1, "runs": LEARN["runs"], "f": LEARN["f"], "s": LEARN["s"], "disc_t": LEARN["disc_t"], "disc_ok": LEARN["disc_ok"]}, ensure_ascii=False)
             _learn_state.update(dirty=False, saved=time.time())
         DATA.mkdir(parents=True, exist_ok=True)
         _atomic(LEARN_FILE, data)
@@ -907,21 +968,30 @@ def learn_save(force=False):
 
 def learn_reset():
     with _learn_lock:
-        LEARN["f"], LEARN["runs"] = {}, 0
+        LEARN["f"], LEARN["s"], LEARN["runs"] = {}, {}, 0
         _learn_state["dirty"] = False
-    try:
-        LEARN_FILE.unlink()
-    except OSError:
-        pass
+        BAD["h"].clear()
+        _bad_state["dirty"] = False
+    for f in (LEARN_FILE, BAD_FILE):
+        try:
+            f.unlink()
+        except OSError:
+            pass
+
+
+def _uk(url):
+    """کلید منبع روی دیسک: هش. لینک اشتراک (ساب) معمولاً توکن شخصی داره و نباید خام توی learn.json بمونه."""
+    return "u:" + hashlib.sha256(str(url).encode("utf-8", "replace")).hexdigest()[:16]
 
 
 def learn_keys(c):
     pt = c.get("port")
-    ks = ["p:" + str(c.get("proto") or ""), "n:" + str(c.get("network") or ""), "s:" + str(c.get("security") or ""),
+    pr, nw, sc = (str(c.get(k) or "")[:20] for k in ("proto", "network", "security"))  # طول کلید محدود
+    ks = ["p:" + pr, "n:" + nw, "s:" + sc,
           "o:" + (str(pt) if pt in PORTS_COMMON else "other"),
-          f"t:{time.localtime().tm_hour // 4}:{c.get('proto')}:{c.get('network')}"]  # ساعت روز هم اثر داره
+          f"t:{time.localtime().tm_hour // 4}:{pr}:{nw}"]  # ساعت روز هم اثر داره
     if c.get("srcurl"):
-        ks.append("u:" + str(c["srcurl"])[:120])
+        ks.append(_uk(c["srcurl"]))
     return ks
 
 
@@ -930,6 +1000,8 @@ def learn_record(c, kind):
     try:
         with _learn_lock:
             for k in learn_keys(c):
+                if k not in LEARN["f"] and len(LEARN["f"]) >= LEARN_MAX_KEYS:  # حافظه و فایل بی‌حد رشد نکنن
+                    continue
                 v = LEARN["f"].setdefault(k, [0.0, 0.0, 0.0, 0.0])
                 if kind == "live":
                     v[0] += 1
@@ -947,13 +1019,16 @@ def learn_record(c, kind):
 
 def learn_score(c):
     """احتمال تخمینی اینکه این سرور هم کار کنه هم سایت‌های لازم رو باز کنه (۰ تا ۱)."""
-    ar, sr = [], []
-    f = LEARN["f"]
+    ar, sr, rk = [], [], []
+    f, sec = LEARN["f"], LEARN["s"]
     for k in learn_keys(c):
         v = f.get(k)
         ar.append((v[1] + 1) / (v[0] + 4) if v else LEARN_PRIOR)
         sr.append((v[3] + 1) / (v[2] + 4) if v else LEARN_PRIOR)
-    return (sum(ar) / len(ar)) * (sum(sr) / len(sr))
+        d = sec.get(k)  # ویژگی‌های عمومی (مثلاً tls یا پورت ۴۴۳) بین همه‌ی سرورها مشترکن؛ پس میانگین می‌گیریم تا ویژگی‌های اختصاصی تعیین‌کننده باشن
+        rk.append(d[1] / (d[0] + 10) if d and d[0] >= 8 else 0.0)
+    risk = sum(rk) / len(rk)
+    return (sum(ar) / len(ar)) * (sum(sr) / len(sr)) * (1 - min(0.9, risk * 2))  # الگوی بارها خطرناک‌شده امتیازش پایین میاد
 
 
 def learn_order(c):
@@ -961,20 +1036,159 @@ def learn_order(c):
     return -learn_score(c) * random.uniform(0.75, 1.25)
 
 
+def _best_src():
+    """نام منبع برتر برای نمایش؛ فقط منبع‌های عمومی (خودکار/پیش‌فرض)، نه لینک اشتراک شخصی که توکن داره."""
+    try:
+        best = None
+        for x in load_db()["sources"]:
+            v = LEARN["f"].get(_uk(x["url"]))
+            if v and v[2] >= 3 and "token" not in x["url"].lower() and not urllib.parse.urlsplit(x["url"]).query:
+                sc = (v[3] + 1) / (v[2] + 4)
+                if sc > LEARN_PRIOR and (best is None or sc > best[0]):
+                    best = (sc, x["url"])
+        return [best[1]] if best else []
+    except Exception:
+        return []
+
+
 def learn_summary():
     f = LEARN["f"]
     tot = lambda i: int(sum(v[i] for k, v in f.items() if k.startswith("p:")))
-    if not f:
+    if not f and not BAD["h"]:
         return None
 
     def best(prefix, n=1, min_site=5):
         rows = [(((v[3] + 1) / (v[2] + 4)), k[len(prefix):]) for k, v in f.items() if k.startswith(prefix) and v[2] >= min_site]
         return [x[1] for x in sorted(rows, reverse=True)[:n] if x[0] > LEARN_PRIOR]
+    now = time.time()
     return dict(tested=tot(0), alive=tot(1), sitetested=tot(2), passed=tot(3), runs=LEARN["runs"],
-                proto=best("p:"), network=best("n:"), port=best("o:"), source=best("u:", 1, 3))
+                quarantined=sum(1 for v in BAD["h"].values() if v[0] > now), risky=risky_patterns(),
+                proto=best("p:"), network=best("n:"), port=best("o:"), source=_best_src())
+
+
+# ------------------------------------------------------------ حافظه‌ی «بد» (قرنطینه + امنیت)
+# سرورهایی که خراب/بی‌فایده/خطرناک بودن مدتی از تست کنار گذاشته می‌شن؛ هر شکست بعدی مدت قرنطینه رو چند برابر می‌کنه.
+# فقط هش (با نمک تصادفی همین نصب) ذخیره می‌شه، نه آدرس سرور. با بستن برنامه پاک نمی‌شه.
+BAD_FILE = DATA / "bad.json"
+BAD = {"salt": "", "h": {}}  # h[هش] = [تا چه زمانی، تعداد شکست پشت‌سرهم، نوع]
+_bad_state = {"dirty": False, "saved": 0.0}
+_bad_lock = threading.Lock()
+BAD_HOURS = {"dead": (2, 12, 48, 168), "sites": (0, 3, 12, 48, 168), "danger": (720,)}  # شکست اول سایت‌ها هنوز قرنطینه نیست (شاید کندی لحظه‌ای بوده)
+BAD_EXPLORE = 0.05  # ۵٪ اوقات سرور قرنطینه‌شده (به‌جز خطرناک‌ها) دوباره امتحان می‌شه؛ شاید درست شده باشه
+
+
+def bad_load():
+    try:
+        d = json.loads(BAD_FILE.read_text(encoding="utf-8"))
+        BAD["salt"] = str(d.get("salt") or "")
+        h = {}
+        for k, v in (d.get("h") or {}).items():  # فایل دست‌کاری/خراب‌شده نباید قرنطینه‌ی دائمی یا کرش بسازه
+            if (len(h) < 30000 and isinstance(v, list) and len(v) >= 3 and v[2] in BAD_HOURS
+                    and isinstance(v[0], (int, float)) and not isinstance(v[0], bool) and math.isfinite(v[0]) and 0 <= v[0] <= 4e9
+                    and isinstance(v[1], int) and not isinstance(v[1], bool) and 0 <= v[1] <= 1000 and re.fullmatch(r"[0-9a-f]{16}", str(k))):
+                h[str(k)] = [float(v[0]), int(v[1]), str(v[2])]
+        BAD["h"] = h
+    except Exception:
+        pass
+    if not BAD["salt"]:
+        BAD["salt"] = secrets.token_hex(8)
+
+
+def bad_save(force=False):
+    if not _bad_state["dirty"] or (not force and time.time() - _bad_state["saved"] < 30):
+        return
+    try:
+        with _bad_lock:
+            now = time.time()
+            for k in [k for k, v in BAD["h"].items() if v[0] < now - 14 * 86400 and v[2] != "danger"]:
+                del BAD["h"][k]
+            if len(BAD["h"]) > 30000:
+                for k in sorted(BAD["h"], key=lambda k: BAD["h"][k][0])[:len(BAD["h"]) - 30000]:
+                    del BAD["h"][k]
+            data = json.dumps(BAD, ensure_ascii=False)
+            _bad_state.update(dirty=False, saved=now)
+        DATA.mkdir(parents=True, exist_ok=True)
+        _atomic(BAD_FILE, data)
+    except Exception:
+        pass
+
+
+def bad_key(c):
+    raw = f"{BAD['salt']}|{c.get('host')}|{c.get('port')}|{c.get('proto')}"
+    return hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def bad_mark(c, kind):
+    """یک شکست ثبت می‌کنه (kind: dead | sites | danger)."""
+    try:
+        k, now = bad_key(c), time.time()
+        with _bad_lock:
+            e = BAD["h"].get(k)
+            strikes = (e[1] if e and e[2] != "danger" else 0) + 1
+            hrs = BAD_HOURS[kind]
+            BAD["h"][k] = [now + hrs[min(strikes, len(hrs)) - 1] * 3600, strikes, kind]
+            _bad_state["dirty"] = True
+        bad_save()
+    except Exception:
+        pass
+
+
+def bad_clear(c, *kinds):
+    """سرور این بار خوب بود؛ شکست‌های قبلیِ این نوع بخشیده می‌شن (خطرناک‌ها هیچ‌وقت بخشیده نمی‌شن)."""
+    try:
+        k = bad_key(c)
+        with _bad_lock:
+            e = BAD["h"].get(k)
+            if e and e[2] in kinds:
+                del BAD["h"][k]
+                _bad_state["dirty"] = True
+    except Exception:
+        pass
+
+
+def bad_skip(c):
+    """این سرور الان در قرنطینه‌ست؟ (خطرناک‌ها همیشه؛ بقیه به‌جز ۵٪ اکتشاف)"""
+    e = BAD["h"].get(bad_key(c))
+    if not e or time.time() >= e[0]:
+        return False
+    return e[2] == "danger" or random.random() > BAD_EXPLORE
+
+
+def sec_record(c, dangerous):
+    """نتیجه‌ی تست امنیتی یک سرور سالم رو به ویژگی‌هاش (پروتکل، ترنسپورت، پورت، منبع) نسبت می‌ده."""
+    try:
+        with _learn_lock:
+            for k in learn_keys(c):
+                if k.startswith("t:"):
+                    continue
+                v = LEARN["s"].setdefault(k, [0.0, 0.0])
+                v[0] += 1
+                v[1] += 1 if dangerous else 0
+                if v[0] > 400:
+                    v[:] = [x / 2 for x in v]
+            _learn_state["dirty"] = True
+        learn_save()
+    except Exception:
+        pass
+
+
+FEAT_FA = {"p": "پروتکل", "n": "ترنسپورت", "s": "امنیت", "o": "پورت"}
+
+
+def risky_patterns():
+    """الگوهایی که خطرناک بودنشون به‌طور محسوس از میانگین کل بیشتره (نه ویژگی‌های عمومی که همه‌جا هستن)."""
+    ot = sum(v[0] for k, v in LEARN["s"].items() if k.startswith("p:"))
+    od = sum(v[1] for k, v in LEARN["s"].items() if k.startswith("p:"))
+    base = max(0.15, 1.5 * od / (ot + 10))
+    rows = []
+    for k, v in LEARN["s"].items():
+        if v[0] >= 10 and k[:2] in ("p:", "n:", "s:", "o:") and v[1] / (v[0] + 10) >= base:
+            rows.append((v[1] / (v[0] + 10), f"{FEAT_FA[k[0]]} {k[2:] if k[2:] != 'other' else 'غیرمعمول'}"))
+    return [r[1] for r in sorted(rows, reverse=True)[:3]]
 
 
 learn_load()
+bad_load()
 
 
 
@@ -986,7 +1200,7 @@ _disc_lock = threading.Lock()
 
 
 def source_v(url):
-    return LEARN["f"].get("u:" + str(url)[:120])
+    return LEARN["f"].get(_uk(url))
 
 
 def source_yield(url):
@@ -1073,6 +1287,12 @@ def sites_pick(found, cache):
             cache[c["raw"]] = r
             if r.get("alive"):
                 learn_record(r, "site")
+                if sites_ok(r):
+                    bad_clear(r, "dead", "sites")
+                else:
+                    bad_mark(r, "sites")
+            else:
+                bad_mark(r, "dead")
     live_ = [r for r in list(cache.values()) if r.get("alive") and not danger(r)]
     return sorted([r for r in live_ if sites_ok(r)], key=lambda r: (-sites_score(r), ping_key(r)))[:8]
 
@@ -1212,6 +1432,8 @@ def standby_sites(gen):
             for o, r in zip(todo, check_many(todo, 1, 5, 6, sites=True)):
                 if r.get("alive"):
                     learn_record(r, "site")
+                    if not sites_ok(r):
+                        bad_mark(r, "sites")
                 o["site_t"] = time.time()
                 if r.get("alive") and sites_ok(r):
                     o["sites"] = r["sites"]
@@ -1411,6 +1633,14 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
             finally:
                 if c.get("tested"):
                     learn_record(c, "live")
+                    if danger(c):  # tls_verify_fail / tamper؛ ۳۰ روز دوباره تست نمی‌شه و الگوش امتیاز منفی می‌گیره
+                        bad_mark(c, "danger")
+                        sec_record(c, True)
+                    elif c.get("alive"):
+                        bad_clear(c, "dead")
+                        sec_record(c, False)
+                    else:
+                        bad_mark(c, "dead")
                 q.put(c)
 
         add_lock, old_lock, old_added, ended = threading.Lock(), threading.Lock(), [False], [False]
@@ -1442,6 +1672,9 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
                     continue
                 if "unsupported" in c["flags"]:
                     skip["unsupported"] += 1
+                    continue
+                if tag != "custom" and bad_skip(c):  # در قرنطینه (خراب یا خطرناک بوده)؛ سرورهای دستیِ خودت هیچ‌وقت رد نمی‌شن
+                    skip["quarantine"] = skip.get("quarantine", 0) + 1
                     continue
                 if "insecure_cert" in c["flags"]:
                     skip["insecure"] += 1
@@ -1695,6 +1928,7 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
         LEARN["runs"] += 1
         _learn_state["dirty"] = True
         learn_save(True)
+        bad_save(True)
         prune_sources()
         for c in found:
             for s in db["sources"]:
@@ -1861,6 +2095,8 @@ def quit_app(uninstall=False):
 
 
 def shutdown():
+    learn_save(True)  # یادگیری و حافظه‌ی بد با بستن برنامه از دست نمی‌رن
+    bad_save(True)
     disconnect(silent=True)
     try:
         (DATA / "run.json").unlink()
@@ -1948,20 +2184,20 @@ class H(http.server.BaseHTTPRequestHandler):
         p = u.path
         if p == "/api/start":
             global PIPE
-            DIRECT[0] = j.get("direct") if j.get("direct") in cfgforge.COUNTRY_DIRECT else ""
+            DIRECT[0] = j.get("direct") if _in(j.get("direct"), cfgforge.COUNTRY_DIRECT) else ""
             VPN_WANT[0] = bool(j.get("sysproxy", True))
             TGONLY[0] = bool(j.get("tgonly", False))
             SITE_CACHE.clear()
             POOL["tiers"] = None
-            if j.get("speed") in SPEEDS:
+            if _in(j.get("speed"), SPEEDS):
                 SPEED[0] = j["speed"]
             if PIPE and PIPE.is_alive():
                 STOP.set()
                 PIPE.join(8)
-            prof = j.get("profile") if j.get("profile") in cfgforge.PROFILES else "balanced"
+            prof = j.get("profile") if _in(j.get("profile"), cfgforge.PROFILES) else "balanced"
             PIPE = threading.Thread(target=pipeline, args=(prof, bool(j.get("quick", True)),
                                                            bool(j.get("sysproxy", True)),
-                                                           j.get("mode") if j.get("mode") in ("stable", "fast", "off") else "stable"),
+                                                           j.get("mode") if _in(j.get("mode"), ("stable", "fast", "off")) else "stable"),
                                     daemon=True)
             PIPE.start()
         elif p == "/api/discover":
@@ -1983,7 +2219,7 @@ class H(http.server.BaseHTTPRequestHandler):
             RUN.update(report.new_stats())
             CUM.clear()
             CUM.update(report.new_stats())
-            for fn in ("good.txt", "custom.txt", "stats.json"):
+            for fn in ("good.txt", "custom.txt", "cache.txt", "stats.json"):
                 try:
                     (DATA / fn).unlink()
                 except OSError:
@@ -2004,7 +2240,9 @@ class H(http.server.BaseHTTPRequestHandler):
             if ls:
                 DATA.mkdir(parents=True, exist_ok=True)
                 cp = DATA / "custom.txt"
-                write_secret(cp, "\n".join(list(dict.fromkeys(ls + read_links(cp)))[:3000]) + "\n")
+                saved = write_secret(cp, "\n".join(list(dict.fromkeys(ls + read_links(cp)))[:3000]) + "\n")
+                if saved is False:
+                    return self.reply(200, {"ok": False, "error": "ذخیره‌ی رمزشده ممکن نشد؛ چیزی ذخیره نشد."})
             res = {"ok": True, "added": len(ls), "urls": len(urls)}
             if not ls and not urls and re.search(r"http://\S", text):
                 res["error"] = "http"  # fetch_sources عمداً فقط https می‌گیره

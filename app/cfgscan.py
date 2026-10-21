@@ -1,6 +1,6 @@
 """cfgscan - تجزیه‌ی لینک کانفیگ‌ها (vmess/vless/trojan/ss/hysteria2/tuic/anytls)، تست واقعی از شبکه‌ی خود کاربر،
 فهرست سیاه IP و دریافت منابع. فقط کتابخانه‌ی استاندارد پایتون؛ برای تست زنده به xray و sing-box نیاز داره."""
-import base64, hashlib, html as _html, ipaddress, json, os, re, shutil, socket, ssl
+import functools, base64, hashlib, html as _html, ipaddress, json, os, re, shutil, socket, ssl
 import statistics, struct, subprocess, tempfile, time, urllib.error, urllib.parse, urllib.request
 import http.client
 import threading
@@ -198,7 +198,7 @@ _LINK_RE = re.compile(r"(?:vmess|vless|trojan|ss|hysteria2|hy2|tuic|anytls)://[^
 
 
 def _links_in(t):
-    return _LINK_RE.findall(_html.unescape(t))  # unescape: صفحه‌هایی مثل t.me/s/کانال
+    return [x for x in _LINK_RE.findall(_html.unescape(t)) if len(x) <= MAX_LINK]  # سقف طول؛ unescape: صفحه‌هایی مثل t.me/s/کانال
 
 
 def extract_links(text):
@@ -220,6 +220,27 @@ def sub_urls(text, links=()):
     return list(dict.fromkeys(u for u in found if public_url(u)))[:5]
 
 
+_NAT64 = ipaddress.ip_network("64:ff9b::/96")
+_SITELOCAL = ipaddress.ip_network("fec0::/10")
+_TEREDO = ipaddress.ip_network("2001::/32")
+
+
+def is_internal_ip(ip):
+    """هر آدرسی که عمومی نیست: خصوصی، loopback، link-local، CGNAT (100.64/10؛ تیل‌اسکیل و متادیتای ابری علی‌بابا)،
+    رزرو، multicast، IPv4-mapped و آدرس‌های NAT64/6to4 که IPv4 داخلی رو پنهان می‌کنن."""
+    if ip.version == 6:
+        if ip.ipv4_mapped:
+            return is_internal_ip(ip.ipv4_mapped)
+        if ip in _NAT64:
+            return is_internal_ip(ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF))
+        if ip.sixtofour:
+            return is_internal_ip(ip.sixtofour)
+        if ip in _SITELOCAL or ip in _TEREDO:
+            return True
+    return (not ip.is_global) or ip.is_multicast or ip.is_unspecified or ip.is_loopback or ip.is_link_local
+
+
+@functools.lru_cache(maxsize=8192)
 def public_url(u):
     """آدرس‌های داخلی (localhost، IP خصوصی، نام بدون نقطه) دریافت نمی‌شن. عمداً DNS حل نمی‌شه: DNS آلوده‌ی بعضی شبکه‌ها
     آدرس‌های مسدودشده رو به IP خصوصی می‌بره و فقط مسیرهای کمکی (آینه، IP ثابت) به جواب می‌رسن."""
@@ -227,17 +248,36 @@ def public_url(u):
         h = (urllib.parse.urlsplit(u).hostname or "").lower()
     except ValueError:
         return False
-    if not h or h == "localhost" or h.endswith((".local", ".localhost", ".internal")):
+    h = h.rstrip(".")  # «127.0.0.1.» هم همان آدرسه
+    if h and not h.isascii():  # دامنه‌ی یونیکد (IDN) رد نمی‌شه؛ به punycode تبدیل و همین‌جا بررسی می‌شه (①②⑦.0.0.1 هم به 127.0.0.1 تبدیل و رد می‌شه)
+        try:
+            h = h.encode("idna").decode("ascii")
+        except UnicodeError:
+            return False
+    if not h or h == "localhost" or h.endswith((".local", ".localhost", ".internal", ".localdomain", ".lan", ".home.arpa")) or h == "localhost.localdomain":
         return False
     if is_ip(h):
         return not non_public(ipaddress.ip_address(h))
+    if re.fullmatch(r"[0-9a-fx.]+", h) and re.search(r"\d", h):  # شکل‌های قدیمی IPv4: 127.1، 0177.0.0.1، 0x7f.1
+        try:
+            return not non_public(ipaddress.ip_address(socket.inet_ntoa(socket.inet_aton(h))))
+        except (OSError, ValueError):
+            pass  # IP نیست؛ دامنه‌ای مثل b2b.de یا 5c.cc که فقط از حروف a-f و رقم ساخته شده، دامنه‌ی معمولیه و رد نمی‌شه
+    m = re.search(r"(\d{1,3})[.-](\d{1,3})[.-](\d{1,3})[.-](\d{1,3})\.(?:nip\.io|sslip\.io|xip\.io|localtest\.me|lvh\.me)$", h)
+    if m:  # دامنه‌ای که IP توش جاسازی شده (127.0.0.1.nip.io)
+        try:
+            return not non_public(ipaddress.ip_address(".".join(m.groups())))
+        except ValueError:
+            return False
+    if h.endswith((".localtest.me", ".lvh.me")) or h in ("localtest.me", "lvh.me"):
+        return False
     return "." in h
 
 
 def non_public(ip):
     """هر آدرسی که روی اینترنت عمومی نیست: خصوصی، loopback، link-local (مثل 169.254.169.254)، CGNAT (100.64/10)،
     رزرو/مستندات و multicast. قبلاً CGNAT و چند بازه‌ی دیگه رد می‌شدن چون is_private برشون نمی‌گیره."""
-    return (not ip.is_global) or ip.is_multicast or ip.is_unspecified
+    return is_internal_ip(ip)  # علاوه بر موارد بالا: IPv4-mapped، NAT64، 6to4 و site-local که IPv4 یا آدرس داخلی رو پنهان می‌کنن
 
 
 # ---------------------------------------------------------------- کانال و گروه‌های عمومی پیام‌رسان‌ها به‌عنوان منبع
@@ -259,8 +299,12 @@ def normalize_channel(text):
         return f"https://t.me/s/{t.lstrip('@')}", "tg"
     if not re.match(r"^[a-z][a-z0-9+.-]*://", t, re.I):
         t = "https://" + t
-    u = urllib.parse.urlsplit(t)
-    host = (u.hostname or "").lower()
+    try:
+        u = urllib.parse.urlsplit(t)
+        host = (u.hostname or "").lower()
+        u.port  # پورت نامعتبر ValueError می‌ده
+    except ValueError:
+        return None, "host"
     host = host[4:] if host.startswith("www.") else host
     if u.scheme.lower() not in ("http", "https") or host not in CHANNEL_HOSTS:
         return None, "host"
@@ -462,14 +506,19 @@ def reach(c, timeout=4):
         return c
     ips = list(dict.fromkeys(i[4][0].split("%")[0] for i in infos))
     ips.sort(key=lambda a: ":" in a)  # IPv4 اول: روی خیلی از شبکه‌ها IPv6 کار نمی‌کنه و xray هم همون آی‌پی انتخاب‌شده رو می‌گیره
-    for a in ips:
+    good, why = [], None
+    for a in ips:  # فقط IPهای بد کنار گذاشته می‌شن؛ دامنه‌ای که IPهای سالم هم داره رد نمی‌شه (قبلاً یک IP بد کل سرور رو می‌انداخت)
         ip = ipaddress.ip_address(a)
         if non_public(ip):
-            c["flags"].add("private_addr")
-            return c
-        if BLOCK.contains(ip):  # قبل از هر اتصالی؛ آنتی‌ویروس هم همین آدرس‌ها رو می‌بنده
-            c["flags"].add("blocklisted")
-            return c
+            why = why or "private_addr"
+        elif BLOCK.contains(ip):  # قبل از هر اتصالی؛ آنتی‌ویروس هم همین آدرس‌ها رو می‌بنده
+            why = "blocklisted"
+        else:
+            good.append(a)
+    if not good:
+        c["flags"].add(why or "private_addr")
+        return c
+    ips = good
     c["ip"] = ips[0]  # همین آی‌پیِ بررسی‌شده توی کانفیگ می‌ره (جلوگیری از DNS rebinding)
     if c["proto"] in ("hysteria2", "tuic"):  # UDP: با TCP نمی‌شه سنجید؛ تست واقعی خودش تصمیم می‌گیره
         c["reachable"], c["tcp_ms"] = True, None
@@ -1012,6 +1061,8 @@ def get_pinned(host, ip, path, ctx, timeout, port=443):
 
 def attempts(u, via=False):
     """ترتیب تلاش‌ها: مستقیم، از طریق پروکسی محلی (اگه وصله)، آینه‌ها، و در آخر اتصال با IP ثابت GitHub."""
+    if not (public_url(u) or is_channel_url(u)):
+        return []  # دفاع دوم: برای آدرس داخلی هیچ تلاشی (مستقیم، via، آینه) برنامه‌ریزی نمی‌شه
     if is_channel_url(u):
         return [("chan", "direct")] + ([("chan", "via")] if via else [])
     ms = mirror_urls(u)
@@ -1037,7 +1088,7 @@ class _SafeRedirect(urllib.request.HTTPRedirectHandler):
         nu = urllib.parse.urljoin(req.full_url, newurl)
         if not nu.lower().startswith("https://") or not public_url(nu):
             raise urllib.error.HTTPError(req.full_url, code, "unsafe redirect", headers, fp)
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
+        return super().redirect_request(req, fp, code, msg, headers, nu)  # آدرس مطلق‌شده
 
 
 class _GuardConn(http.client.HTTPSConnection):
@@ -1064,6 +1115,34 @@ class _GuardConn(http.client.HTTPSConnection):
         raise last
 
 
+class _GuardHTTPConn(http.client.HTTPConnection):
+    """همان نگهبان برای http:// ساده (قبلاً فقط https بررسی می‌شد و http://127.0.0.1 خوانده می‌شد)."""
+
+    def connect(self):
+        last = OSError("no address")
+        for fam, typ, proto, _, sa in socket.getaddrinfo(self.host, self.port, type=socket.SOCK_STREAM):
+            if _private_ip(ipaddress.ip_address(sa[0].split("%")[0])):
+                last = socket.gaierror("private address blocked")
+                continue
+            s = socket.socket(fam, typ, proto)
+            try:
+                if self.timeout is not socket._GLOBAL_DEFAULT_TIMEOUT:
+                    s.settimeout(self.timeout)
+                s.connect(sa)
+            except OSError as e:
+                s.close()
+                last = e
+                continue
+            self.sock = s
+            return
+        raise last
+
+
+class _GuardHTTP(urllib.request.HTTPHandler):
+    def http_open(self, req):
+        return self.do_open(_GuardHTTPConn, req)
+
+
 class _GuardHTTPS(urllib.request.HTTPSHandler):
     def https_open(self, req):
         return self.do_open(_GuardConn, req, context=self._context)
@@ -1071,8 +1150,8 @@ class _GuardHTTPS(urllib.request.HTTPSHandler):
 
 def safe_opener(ctx=None):
     """اتصال مستقیم امن برای دریافت منبع‌ها: بدون پروکسی سیستم، IP داخلی رد، ریدایرکت فقط https عمومی."""
-    return urllib.request.build_opener(urllib.request.ProxyHandler({}), _GuardHTTPS(context=ctx or ssl.create_default_context()),
-                                       _SafeRedirect())
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}), _GuardHTTP(),
+                                       _GuardHTTPS(context=ctx or ssl.create_default_context()), _SafeRedirect())
 
 
 def _openers(ctx, proxy_port=None):
@@ -1087,6 +1166,23 @@ def _openers(ctx, proxy_port=None):
 GH_API = "https://api.github.com"
 DISC_QUERIES = ("v2ray free config", "vless vmess trojan subscription", "xray free servers list")
 _DISC_NAME = re.compile(r"(?i)(v2ray|vless|vmess|trojan|hysteria|hy2|tuic|shadowsocks|sub|config|mix|proxy|server|free|all|normal)")
+
+
+def _int(x, hi=10 ** 9):
+    try:
+        return max(0, min(int(x), hi))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _safe_branch(b):
+    return bool(re.fullmatch(r"[\w.-]{1,100}(?:/[\w.-]{1,100}){0,3}", b)) and ".." not in b.split("/")
+
+
+def _safe_path(p):
+    """مسیر فایل توی ریپو: بدون . و .. و بک‌اسلش و کاراکتر کنترلی (وگرنه URL به جای دیگه‌ای می‌ره)."""
+    return (not re.search(r"[\x00-\x1f\x7f\\]", p) and not p.startswith("/")
+            and all(s not in ("", ".", "..") for s in p.split("/")))
 
 
 def discover_github(opener, log=lambda m: None, stop=None, max_repos=10, per_repo=5):
@@ -1115,13 +1211,17 @@ def discover_github(opener, log=lambda m: None, stop=None, max_repos=10, per_rep
         except Exception as e:
             info["err"] = classify(e)
             continue
-        for it in d.get("items") or []:
+        items = d.get("items") if isinstance(d, dict) else None
+        for it in (items if isinstance(items, list) else []):
+            if not isinstance(it, dict):  # پاسخ خراب یا غیرمنتظره نباید کل جستجو رو بندازه
+                continue
             fn = str(it.get("full_name") or "")
-            if (not re.fullmatch(r"[\w.-]+/[\w.-]+", fn) or fn in seen or it.get("fork") or it.get("archived")
-                    or it.get("private") or not it.get("size")):
+            br = str(it.get("default_branch") or "main")
+            if (not re.fullmatch(r"[\w.-]{1,60}/[\w.-]{1,100}", fn) or fn in seen or it.get("fork") or it.get("archived")
+                    or it.get("private") or not it.get("size") or not _safe_branch(br)):
                 continue
             seen.add(fn)
-            repos.append((fn, str(it.get("default_branch") or "main"), int(it.get("stargazers_count") or 0)))
+            repos.append((fn, br, _int(it.get("stargazers_count"))))
     repos = sorted(repos, key=lambda r: -r[2])[:max_repos]
     urls = []
     for fn, br, _ in repos:
@@ -1136,11 +1236,14 @@ def discover_github(opener, log=lambda m: None, stop=None, max_repos=10, per_rep
             info["err"] = classify(e)
             continue
         picked = []
-        for e in t.get("tree") or []:
-            path, size = str(e.get("path") or ""), int(e.get("size") or 0)
+        tree = t.get("tree") if isinstance(t, dict) else None
+        for e in (tree if isinstance(tree, list) else []):
+            if not isinstance(e, dict):
+                continue
+            path, size = str(e.get("path") or ""), _int(e.get("size"))
             low = path.lower()
             if (e.get("type") != "blob" or not low.endswith(".txt") or not 2000 <= size <= 3_000_000 or low.count("/") > 3
-                    or not _DISC_NAME.search(low.rsplit("/", 1)[-1])):
+                    or len(path) > 300 or not _safe_path(path) or not _DISC_NAME.search(low.rsplit("/", 1)[-1])):
                 continue
             picked.append((size, path))
         for size, path in sorted(picked, reverse=True)[:per_repo]:
@@ -1159,7 +1262,7 @@ def fetch_sources(urls, per_source=400, log=print, origin=None, stop=None, proxy
     stop = stop or (lambda: False)
     ctx = _ssl_ctx()
     direct, via = _openers(ctx, proxy_port)
-    urls = [u for u in urls if re.match(r"^https://", u, re.I)]
+    urls = [u for u in urls if re.match(r"^https://", u, re.I) and (public_url(u) or is_channel_url(u))]  # تنها دروازه: آدرس داخلی هرگز به برنامه‌ی دریافت (مستقیم یا via) نمی‌رسه
     done = {u: threading.Event() for u in urls}
     got, errs = {}, {u: {} for u in urls}
 

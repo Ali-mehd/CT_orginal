@@ -108,7 +108,7 @@ ol{padding-right:18px;margin:4px 0}
  <div class="pane" data-p="srv"><p class="m" id="sw" style="margin-top:0"></p><div id="servers"></div><p class="m">«فعال» الان استفاده می‌شه. «آماده» جایگزین‌هاییه که تست شدن و هر سه سایت (یوتیوب، اینستاگرام و تلگرام) رو باز می‌کنن؛ اگه سرور فعال قطع یا ضعیف شد، برنامه خودش فوری به یکی از اینا می‌پره. سرورهایی که این شرط رو نداشته باشن اینجا نگه داشته نمی‌شن (در «حالت اضطراری» شرط فقط باز شدن تلگرامه). پینگ و سرعت مال آخرین تسته.</p></div>
  <div class="pane" data-p="an"><div id="learnbox" class="m" style="margin-top:0;padding-bottom:12px;border-bottom:1px solid var(--line)"><b style="color:var(--fg)">یادگیری محلی</b>
    <div id="learntxt" style="margin-top:4px"></div><div class="chips" id="learnbest" style="justify-content:flex-start"></div>
-   <p class="m" style="margin:6px 0 0">فقط روی همین دستگاه و بدون اینترنت ذخیره می‌شه و آدرس سرورها ذخیره نمی‌شه؛ فقط شمارنده‌ی ویژگی‌ها (پروتکل، ترنسپورت، پورت، ساعت، منبع). برنامه باهاش سرورهای امیدوارکننده رو اول تست می‌کنه.</p>
+   <p class="m" style="margin:6px 0 0">فقط روی همین دستگاه و بدون اینترنت ذخیره می‌شه و با بستن برنامه پاک نمی‌شه. آدرس سرورها ذخیره نمی‌شه؛ فقط شمارنده‌ی ویژگی‌ها (پروتکل، ترنسپورت، پورت، ساعت، منبع) و هش سرورهای قرنطینه. برنامه هم از موفقیت‌ها یاد می‌گیره (امیدوارکننده‌ها اول تست می‌شن) و هم از شکست‌ها و موارد خطرناک (سرور خراب یا خطرناک مدتی کنار می‌ره و الگوهای پرخطر امتیاز منفی می‌گیرن).</p>
    <button class="btn" id="learnreset" style="margin:6px 0 0">پاک کردن یادگیری</button></div>
   <div id="rsum" class="m" style="margin-top:0">هنوز اسکنی انجام نشده.</div><div id="methods"></div>
   <p class="m">«کارکرده» یعنی ترافیک واقعی ازش رد شد و مشکل امنیتی دیده نشد. سرورهای فهرست سیاه اصلاً تست نمی‌شن.</p>
@@ -188,9 +188,10 @@ function render(s){S=s;const st=s.stage,c=s.connected;
   if(!(s.autosrc||[]).length)L.appendChild(el("p","هنوز منبع خودکاری اضافه نشده.","m"))});
  once("learn",[s.learn],()=>{const L=s.learn,t=$("learntxt"),b=$("learnbest");b.textContent="";
   if(!L){t.textContent="هنوز چیزی یاد نگرفته؛ بعد از اولین اسکن شروع می‌شه.";return}
-  t.textContent="تا الان "+L.tested+" سرور تست شده؛ "+L.alive+" تا کار کرد و از "+L.sitetested+" تست سایت، "+L.passed+" تا همه‌ی سایت‌های لازم رو باز کرد ("+L.runs+" اسکن تجربه).";
+  t.textContent="تا الان "+L.tested+" سرور تست شده؛ "+L.alive+" تا کار کرد و از "+L.sitetested+" تست سایت، "+L.passed+" تا همه‌ی سایت‌های لازم رو باز کرد ("+L.runs+" اسکن تجربه)."+(L.quarantined?" "+L.quarantined+" سرور موقتاً در قرنطینه‌ست (خراب یا بی‌فایده بوده و مدتی تست نمی‌شه).":"");
   const add=(n,v)=>{if(v&&v.length){const e=el("span",n+": "+v[0],"chip sm ok");e.style.direction="ltr";b.appendChild(e)}};
-  add("بهترین پروتکل",L.proto);add("ترنسپورت",L.network);add("پورت",L.port);if(L.source&&L.source.length)add("منبع",[L.source[0].replace("https://","").slice(0,38)])});
+  add("بهترین پروتکل",L.proto);add("ترنسپورت",L.network);add("پورت",L.port);if(L.source&&L.source.length)add("منبع",[L.source[0].replace("https://","").slice(0,38)]);
+  (L.risky||[]).forEach(r=>b.appendChild(el("span","پرخطر: "+r,"chip sm no")))});
  once("mt",[s.methods,s.rsum],()=>{const r=s.rsum||{},m=$("methods");m.textContent="";
   $("rsum").textContent=r.tested?("تست‌شده: "+r.tested+" | پاسخ‌دهنده: "+r.reach+" | کارکرده: "+r.alive+(r.blocked?" | رد‌شده با فهرست سیاه: "+r.blocked:"")+(r.runs_total>1?" | کل اجراها: "+r.runs_total:"")):"هنوز اسکنی انجام نشده.";
   (s.methods||[]).forEach(x=>{const d=el("div",null,"kv");d.append(el("span",x.k),el("span",x.alive+" از "+x.tested+" ("+x.rate+"٪)"+(x.mbps?" | "+x.mbps+" Mbps":"")+(x.rescued?" | ترفند: "+x.rescued:"")));m.appendChild(d)})});
