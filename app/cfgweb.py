@@ -12,6 +12,7 @@ ROOT = HERE.parent
 DATA = Path(os.environ.get("CFG_DATA") or ROOT / "data")
 sys.path.insert(0, str(HERE))
 import cfgscan, cfgforge, report  # noqa: E402
+import cfgcall  # noqa: E402
 try:
     import netprobe  # noqa: E402
 except Exception:  # بدون سنجش شبکه هم برنامه مثل قبل کار می‌کنه
@@ -203,7 +204,7 @@ def save_settings(j):
         cur["mode"] = j["mode"]
     if _in(j.get("speed"), SPEEDS):
         cur["speed"] = j["speed"]
-    for k in ("quick", "sysproxy", "tgonly", "autosrc"):
+    for k in ("quick", "sysproxy", "tgonly", "autosrc", "call"):
         if isinstance(j.get(k), bool):
             cur[k] = j[k]
     if isinstance(j.get("tgonly"), bool):
@@ -325,14 +326,14 @@ def ping_key(c):
     return c.get("lat") or 99999
 
 
-def check(c, rounds=1, timeout=3, speed=False, secs=3.0, sites=False):
+def check(c, rounds=1, timeout=3, speed=False, secs=3.0, sites=False, call=None):
     """تست واقعی یه کانفیگ روی یه نمونه‌ی جدا از xray (روی یه کپی تا اصل خراب نشه)."""
     cc = dict(c)
     cc["flags"] = set(c["flags"])
     if sites:  # نتیجه‌ی قدیمی سایت‌ها نباید جای تست تازه بشینه
         cc.pop("sites", None)
     try:
-        cfgscan.live(cc, find_xray(), rounds, timeout, speed, secs, sites)
+        cfgscan.live(cc, find_xray(), rounds, timeout, speed, secs, sites, CALL[0] if call is None else call)
     except Exception:
         cc["alive"] = False
     cc["verified_at"] = time.time()
@@ -357,6 +358,8 @@ STRICT_BAD = {"no_tls", "weak_cipher", "legacy_aid", "no_sni", "insecure_cert"}
 def rk(c):
     """معیار انتخاب بهترین سرور؛ هر حالت یه معیار واقعاً متفاوت داره."""
     m = CUR[0]
+    if CALL[0]:  # حالت تماس: فقط کیفیت UDP مهمه (امتیاز MOS بالاتر بهتر)؛ سرورِ بدون اندازه‌گیری بعد از اندازه‌گیری‌شده‌های قابل‌قبول
+        return call_key(c) + (eff(c),)
     if m == "speed":
         return (-((c.get("kbps") or 0) // 250), cost(c))
     if m == "stable":
@@ -690,7 +693,7 @@ def bench_loop(gen):
                 if GEN[0] != gen or STOP.is_set():
                     return
                 time.sleep(1)
-            if S["stage"] != "connected" or GUARD_LOCK.locked() or not (POOL.get("bench") or []):
+            if CALL[0] or S["stage"] != "connected" or GUARD_LOCK.locked() or not (POOL.get("bench") or []):
                 continue
             bench_step()
     except Exception:
@@ -769,7 +772,7 @@ def _failover(gen, profile, sysproxy, mode):
         bad[(c["host"], c["port"])] = time.time() + 600  # تا ۱۰ دقیقه برنمی‌گرده سراغش
     rest = [c for c in POOL["standby"] if c.get("strikes", 0) < 2 and bad.get((c["host"], c["port"]), 0) < time.time()]
     fresh = time.time() - 90
-    rest.sort(key=lambda c: (not sites_ok(c), flaky(c), c.get("verified_at", 0) < fresh, -(c.get("success") or 0), eff(c)))
+    rest.sort(key=lambda c: (not sites_ok(c), call_key(c) if CALL[0] else (), flaky(c), c.get("verified_at", 0) < fresh, -(c.get("success") or 0), eff(c)))
     tried = set()
     for _ in range(3):  # مسیر سریع: جایگزینی که همین چند ثانیه‌ی پیش کاملاً سالم بوده؛ سلامتش بعد از اتصال دوباره با ترافیک واقعی چک می‌شه
         if GEN[0] != gen or STOP.is_set():
@@ -824,6 +827,106 @@ def _failover(gen, profile, sysproxy, mode):
     threading.Thread(target=pipeline, args=(profile, True, sysproxy, mode, True), daemon=True).start()
 
 
+def call_key(c):
+    """کلید رتبه‌ی «مناسب برای تماس»: اول سرورهایی که UDP رد می‌کنن و درجه‌ی قابل‌قبول دارن، بعد امتیاز MOS بالاتر."""
+    q = c.get("call")
+    return (0 if cfgcall.call_ok(q) else 1, -((q or {}).get("mos") or 0))
+
+
+def set_call(on):
+    CALL[0] = cfgforge.CALL[0] = bool(on)
+    if not on:
+        S["call"] = None
+        S["note"] = ""
+
+
+def call_tips(q):
+    """توصیه‌ی کوتاه بر اساس اندازه‌گیری (فقط چیزی که واقعاً اندازه‌گیری شده)."""
+    if not q:
+        return []
+    if not q.get("udp_ok"):
+        return ["UDP از این سرور رد نمی‌شه. «بهترین سرور برای تماس» رو بزن؛ اگه هیچ سروری UDP نداشت، تماس صوتی پایدار ممکن نیست."]
+    t = []
+    if (q.get("loss") or 0) >= 3:
+        t.append("افت بسته بالاست: روی Wi-Fi به مودم نزدیک‌تر شو یا جای دیگه امتحان کن؛ همزمان دانلود/آپلود سنگین نداشته باش.")
+    if (q.get("jitter") or 0) >= 40:
+        t.append("نوسان زیاده: برنامه‌ی دیگه‌ای که اینترنت مصرف می‌کنه (آپدیت، دانلود) رو متوقف کن.")
+    if (q.get("p50") or 0) >= 300:
+        t.append("تأخیر بالاست: «بهترین سرور برای تماس» رو بزن تا سرور نزدیک‌تر/سریع‌تر انتخاب بشه.")
+    return t
+
+
+def call_state():
+    q = S.get("call") if CALL[0] else None
+    return dict(on=CALL[0], q=q, tips=call_tips(q), tg=f"tg://socks?server=127.0.0.1&port={SOCKS}", android=bool(ANDROID))
+
+
+def call_monitor(gen):
+    """وقتی حالت تماس روشنه، هر ~۶ ثانیه ۳ نمونه‌ی UDP کوچیک (STUN) از تونل می‌فرسته و کیفیت زنده رو (۴۰ نمونه‌ی اخیر) به‌روز می‌کنه.
+    سرور رو خودش عوض نمی‌کنه (وسط تماس تعویض = قطع تماس)؛ فقط اندازه می‌گیره و نشون می‌ده."""
+    ring = deque(maxlen=40)
+    try:
+        while GEN[0] == gen and not STOP.is_set():
+            for _ in range(6):
+                if GEN[0] != gen or STOP.is_set():
+                    return
+                time.sleep(1)
+            if not CALL[0] or S["stage"] != "connected" or GUARD_LOCK.locked():
+                ring.clear()
+                continue
+            r = cfgcall.measure(SOCKS, count=3, interval=0.3, wait=1.0)
+            ring.extend([None] * 3 if r is None else r)
+            S["call"] = dict(cfgcall.assess(list(ring)), t=time.time())
+    except Exception:
+        pass
+
+
+def call_prepare(gen, profile, switch=True):
+    """حالت تماس تازه روشن شده: اتصال فعلی رو برای UDP می‌سنجه؛ جایگزین‌های آماده رو هم می‌سنجه و اگه یکی واضحاً بهتره
+    (حداقل یک درجه بالاتر و MOS بیشتر) و سایت‌ها رو باز می‌کنه، با بازگشت خودکار بهش می‌پره. وسط تماس هیچ‌وقت صدا زده نمی‌شه."""
+    try:
+        cur = cfgcall.measure_via(SOCKS, 16)
+        if cur is None or GEN[0] != gen or not CALL[0]:
+            return
+        S["call"] = dict(cur, t=time.time())
+        S["note"] = f"حالت تماس: کیفیت فعلی {cur['grade_fa']} (MOS≈{cur['mos']})"
+        cand = sorted([c for c in POOL["standby"] if sites_ok(c)], key=eff)[:6]
+        if not cand:
+            return
+        S["note"] = "حالت تماس: دارم جایگزین‌های آماده رو برای تماس می‌سنجم ..."
+        res = check_many(cand, 1, 4, 6, sites=False)  # CALL روشنه؛ هر نتیجه «call» داره
+        by = {c["raw"]: c for c in POOL["standby"]}
+        for r in res:
+            if r.get("call") and r["raw"] in by:
+                by[r["raw"]]["call"] = r["call"]
+        S["note"] = f"حالت تماس: کیفیت فعلی {cur['grade_fa']} (MOS≈{cur['mos']})"
+        good = sorted([r for r in res if solid(r) and cfgcall.call_ok(r.get("call"), "good")], key=call_key)
+        gi = cfgcall.GRADES.index
+        if not switch or not good or GEN[0] != gen or STOP.is_set():
+            return
+        if gi(good[0]["call"]["grade"]) <= gi(cur["grade"]) or good[0]["call"]["mos"] <= cur["mos"] + 0.2:
+            return  # سرور فعلی همین‌قدر خوبه؛ تعویضِ بی‌دلیل خودش ریسکه
+        with SWITCH:
+            prev = list(POOL["active"])
+            sel = start_xray(good[:1], profile)
+            ms = probe_retry(3, 3)
+            nq = cfgcall.measure_via(SOCKS, 12) if ms else None
+            if ms and nq and cfgcall.call_ok(nq, "fair") and nq["mos"] > cur["mos"]:
+                POOL["standby"] = [c for c in POOL["standby"] if c["raw"] != sel[0]["raw"]] + prev
+                set_active(sel, ms)
+                POOL["switches"] += 1
+                POOL["sites"] = None
+                save_good(sel)
+                sw_mark("حالت تماس: سرور بهتر برای تماس")
+                S["call"] = dict(nq, t=time.time())
+                S["note"] = f"برای تماس به سرور بهتری رفتی: {nq['grade_fa']} (MOS≈{nq['mos']})"
+            else:
+                start_xray(prev, profile)  # بهتر نبود؛ برگرد
+                S["note"] = f"حالت تماس: کیفیت فعلی {cur['grade_fa']}؛ جایگزین بهتری پیدا نشد"
+    except Exception:
+        pass
+
+
 def upgrade_check(gen, profile, hist):
     with SWITCH:
         return _upgrade_check(gen, profile, hist)
@@ -859,6 +962,8 @@ SPEEDS = {  # rate: تست اتصال در ثانیه، live: تست زنده‌
     "fast": dict(rate=30, live=14, workers=64),
     "turbo": dict(rate=60, live=20, workers=96),
 }
+CALL = [bool(load_settings().get("call"))]  # «حالت تماس» (واتساپ/تلگرام): فقط شرایط تماس باکیفیت؛ بقیه‌ی کارها وظیفه‌ش نیست
+cfgforge.CALL[0] = CALL[0]
 TGONLY = [bool(load_settings().get("tgonly"))]  # «حالت اضطراری: فقط تلگرام»؛ پیش‌فرض خاموشه و فقط سروری که هر سه سایت رو باز کنه قبول می‌شه
 SITE_CACHE = {}  # نتیجه‌ی تست سه سایت برای هر سرور در همین اجرا
 SPEED = [load_settings().get("speed", "normal") if load_settings().get("speed") in ("gentle", "normal", "fast", "turbo") else "normal"]
@@ -891,6 +996,8 @@ def refill(gen, profile, seen):
     last_fetch, P = time.time(), cfgforge.PROFILES[profile]
     while GEN[0] == gen and S["stage"] == "connected" and not STOP.is_set():
         time.sleep(10 if POOL.get("refill_fast", 0) > time.time() else 40)  # سرور فعلی ضعیفه و جایگزین نداریم: سریع‌تر دنبال جایگزین بگرد
+        if CALL[0]:
+            continue  # حالت تماس: ترافیک و پردازش پس‌زمینه ممنوع (جیتر تماس رو بالا می‌بره)
         if GEN[0] != gen or S["stage"] != "connected" or len(POOL["standby"]) >= 14:
             continue
         batch = [POOL["backlog"].pop(0) for _ in range(min(8, len(POOL["backlog"])))]
@@ -961,7 +1068,7 @@ def supervisor(gen, profile, sysproxy, mode):
         elif lk == "good" and warned and (S.get("warn") or "").endswith("عوض نمی‌شه."):
             S["warn"], warned = "", False
         FAILN = 5 if mode == "stable" else 3  # حالت هوشمند: ۵ خطای پشت‌سرهم (≈۱۵–۲۰ ثانیه)، نه ۳ تا؛ خطای لحظه‌ای تماس رو قطع نکنه
-        soft = (mode == "stable" and len(hist) >= 30 and time.time() - t_switch > 60 and len(okr) / len(hist) < 0.6
+        soft = (not CALL[0] and mode == "stable" and len(hist) >= 30 and time.time() - t_switch > 60 and len(okr) / len(hist) < 0.6
                 and calm_ok())
         if (fails >= FAILN or soft) and not dead and not net_up():
             S["note"] = "اینترنتِ خودت قطعه؛ سرور رو عوض نمی‌کنم و منتظر برگشتنش می‌مونم."
@@ -978,10 +1085,10 @@ def supervisor(gen, profile, sysproxy, mode):
             failover(gen, profile, sysproxy, mode)
             hist.clear()
             fails, t_switch = 0, time.time()
-        elif time.time() - t_ref > 60:
+        elif time.time() - t_ref > 60 and not CALL[0]:
             refresh_standby(gen)
             t_ref = time.time()
-        elif mode == "stable" and time.time() - t_eval > 600 and time.time() - t_switch > 600:
+        elif not CALL[0] and mode == "stable" and time.time() - t_eval > 600 and time.time() - t_switch > 600:
             upgrade_check(gen, profile, hist)
             t_eval = time.time()
 
@@ -1624,6 +1731,8 @@ def sites_watch(gen, profile, found):
                 if GEN[0] != gen or STOP.is_set():
                     return
                 time.sleep(5)
+            if CALL[0]:
+                continue  # حالت تماس: چک سایت‌ها و کشف منبع ترافیک اضافه‌ست
             if S["stage"] == "connected" and not DISC["running"] and time.time() - LEARN["disc_t"] > 20:
                 threading.Thread(target=discover_sources, daemon=True).start()  # اگه موعدش نشده باشه فوراً برمی‌گرده
             if S["stage"] != "connected" or not POOL["active"] or GUARD_LOCK.locked():
@@ -1711,6 +1820,9 @@ def standby_sites(gen):
     اونایی که باز نمی‌کنن از لیست جایگزین‌ها حذف می‌شن تا جابه‌جایی خودکار هیچ‌وقت به سرور بی‌فایده نپره."""
     try:
         while GEN[0] == gen and not STOP.is_set():
+            if CALL[0]:
+                time.sleep(5)  # حالت تماس: تست پس‌زمینه‌ی سایت‌ها ممنوع
+                continue
             now = time.time()  # تازه‌ها یا اونایی که نتیجه‌ی سایتشون از SITE_RETEST ثانیه قدیمی‌تره (سرور وسط راه ممکنه خراب شده باشه)
             todo = sorted([c for c in list(POOL["standby"]) if "sites" not in c or now - c.get("site_t", 0) > SITE_RETEST],
                           key=lambda c: c.get("site_t", 0))[:6]
@@ -2185,6 +2297,7 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
             threading.Thread(target=standby_sites, args=(GEN[0],), daemon=True).start()
             threading.Thread(target=sites_watch, args=(GEN[0], profile, found), daemon=True).start()
             threading.Thread(target=bench_loop, args=(GEN[0],), daemon=True).start()
+            threading.Thread(target=call_monitor, args=(GEN[0],), daemon=True).start()
 
         finished, why = 0, ""
         while not STOP.is_set():
@@ -2395,6 +2508,7 @@ def state():
     d["profile"] = CUR[0]
     d["settings"] = load_settings()
     d["tgonly"], d["tiers"], d["learn"] = TGONLY[0], POOL.get("tiers"), learn_summary()
+    d["call"] = call_state()
     d["disc"] = dict(DISC, last=LEARN["disc_t"])
     d["autosrc"] = [dict(url=x["url"], got=x.get("got", 0), on=bool(x.get("on")), off=bool(x.get("auto_off")),
                          tested=int((source_v(x["url"]) or [0])[0]), passed=int((source_v(x["url"]) or [0, 0, 0, 0])[3]))
@@ -2508,6 +2622,23 @@ class H(http.server.BaseHTTPRequestHandler):
         except Exception:
             return self.reply(400, {"error": "bad"})
         p = u.path
+        if p == "/api/call":
+            on = bool(j.get("on"))
+            set_call(on)
+            save_settings({"call": on})
+            if on and S["stage"] == "connected":
+                threading.Thread(target=call_prepare, args=(GEN[0], CUR[0], bool(j.get("switch", True))), daemon=True).start()
+            return self.reply(200, {"ok": True, "call": call_state()})
+        if p == "/api/call/test":
+            if S["stage"] != "connected":
+                return self.reply(200, {"ok": False, "error": "not_connected"})
+            q = cfgcall.measure_via(SOCKS, 20) or cfgcall.assess([])
+            S["call"] = dict(q, t=time.time())
+            return self.reply(200, {"ok": True, "q": S["call"], "tips": call_tips(q)})
+        if p == "/api/call/best":
+            if S["stage"] == "connected" and CALL[0]:
+                threading.Thread(target=call_prepare, args=(GEN[0], CUR[0], True), daemon=True).start()
+            return self.reply(200, {"ok": True})
         if p == "/api/start":
             global PIPE
             DIRECT[0] = j.get("direct") if _in(j.get("direct"), cfgforge.COUNTRY_DIRECT) else ""

@@ -83,6 +83,21 @@ ol{padding-right:18px;margin:4px 0}
  <div class="m" id="mdesc"></div>
 </div>
 
+<div class="card" id="callcard">
+ <div class="row"><span>حالت تماس (واتساپ و تلگرام) <button class="i" data-t="h-call">ⓘ</button></span><label class="sw"><input type="checkbox" id="callon"><span></span></label></div>
+ <p class="hint" id="h-call" hidden>فقط برای تماس صوتی/تصویری: سرور رو بر اساس کیفیت واقعیِ UDP از داخل تونل (تأخیر، نوسان، افت بسته) می‌سنجه، وسط کار سرور رو عوض نمی‌کنه مگر قطعِ کامل، کارهای پس‌زمینه (تست سایت‌ها، اسکن، دانلود منبع) رو متوقف می‌کنه تا اینترنتِ تماس رو اذیت نکنه، و کانفیگ رو بدون balancer و mux می‌سازه. عدد MOS یک برآورد تقریبیه، نه ضمانت.</p>
+ <div id="callbox" style="display:none">
+  <div class="chips" id="callq"></div>
+  <div class="m" id="calltips" style="margin-top:6px"></div>
+  <div style="margin-top:8px"><button class="btn" id="calltest">تست آمادگی تماس</button><button class="btn" id="callbest">بهترین سرور برای تماس</button></div>
+  <div class="m" id="callsocks" style="margin-top:8px"></div>
+  <div style="margin-top:4px"><a class="btn" id="calltg" href="#" style="display:inline-block;text-decoration:none">افزودن به تلگرام (SOCKS5)</a></div>
+  <p class="hint" style="margin-top:8px">تلگرام: بعد از افزودن، توی Settings ← Data and Storage ← Proxy گزینه‌ی «Use proxy for calls» رو روشن کن. پراکسی MTProto تماس رو پشتیبانی نمی‌کنه؛ فقط SOCKS5.</p>
+  <p class="hint" id="callwa"></p>
+ </div>
+</div>
+
+
 </div><div class="c2">
 <details id="setd"><summary>تنظیمات</summary>
  <div class="row"><span>جابه‌جایی سرور <button class="i" data-t="h-fo">ⓘ</button></span>
@@ -169,6 +184,10 @@ function render(s){S=s;const st=s.stage,c=s.connected;
   if(window.AndroidBridge)$("batt").style.display="block"}
  if(s.cdp&&!window._bu){window._bu=1;window.addEventListener("beforeunload",e=>{e.preventDefault();e.returnValue=""})}
  once("ch",[s.sources],()=>{const b=$("chl");b.textContent="";(s.sources||[]).filter(x=>x.kind=="channel").forEach(x=>{const d=el("div",null,"kv");const n=el("span",x.url.replace("https://t.me/s/","@").replace("https://",""));n.style.direction="ltr";const r=el("button","حذف","btn x");r.onclick=()=>api("/api/delsource",{url:x.url}).then(tick);d.append(n,el("span",x.got?x.got+" کانفیگ (آخرین بار)":""),r);b.appendChild(d)});});
+ once("call",[s.call,s.stage],()=>{const c=s.call||{},q=c.q,b=$("callq");b.textContent="";$("callon").checked=!!c.on;$("callbox").style.display=c.on?"block":"none";if(!c.on)return;
+  if(!q)b.appendChild(el("span","در حال اندازه‌گیری …","chip"));else{b.appendChild(el("span","کیفیت تماس: "+q.grade_fa,"chip "+(q.grade=="excellent"||q.grade=="good"?"ok":q.grade=="fair"?"":"no")));if(q.udp_ok){b.appendChild(el("span","تأخیر "+Math.round(q.p50)+" ms","chip"));b.appendChild(el("span","نوسان "+Math.round(q.jitter||0)+" ms","chip"));b.appendChild(el("span","افت "+q.loss+"٪","chip"));b.appendChild(el("span","MOS ≈ "+q.mos,"chip"))}}
+  $("calltips").textContent=(c.tips||[]).join(" ");$("calltg").href=c.tg||"#";$("callsocks").textContent="SOCKS5: 127.0.0.1:"+String(c.tg||"").split("port=")[1];
+  $("callwa").textContent=c.android?"واتساپ: چون اتصال کل گوشی (VPN) فعاله، UDP تماس واتساپ باید از همین تونل بره.":"واتساپ دسکتاپ برای تماس از پراکسی ویندوز استفاده نمی‌کنه؛ تماس واتساپ روی ویندوز با این برنامه تضمین نمی‌شه (فقط اتصال کل سیستم مثل VPN، UDP واتساپ رو می‌بره)."});
  once("sites",[s.sites,s.stage],()=>{const b=$("sitesln");b.textContent="";if(s.stage!="connected"||!s.sites)return;const nm={yt:"یوتیوب",ig:"اینستاگرام",tg:"تلگرام"};Object.keys(nm).forEach(k=>b.appendChild(el("span",(s.sites[k]?"✓ ":"✗ ")+nm[k],"chip "+(s.sites[k]?"ok":"no"))))});
  once("upd",[s.fetch,s.sources],()=>{const b=$("updln");b.textContent="";const f=s.fetch||{};if(!f.t){b.textContent="منابع: هنوز دریافت نشده";return}if(!f.n){b.textContent="منابع: دریافت ناموفق بود (۰ کانفیگ)؛ از لیست ذخیره‌شده‌ی قبلی استفاده می‌شه.";b.style.color="var(--bad,#ff8a80)";return}b.style.color="";const tm=new Date(f.t*1000).toLocaleTimeString("fa-IR",{hour:"2-digit",minute:"2-digit"});b.appendChild(el("span","منابع به‌روز شد ("+tm+"): "+f.n+" کانفیگ از "+f.ok+" منبع"));const cw=el("div",null,"chips");(s.sources||[]).filter(x=>x.kind=="channel").forEach(x=>{const e=el("span",(x.got?"✓ ":"✗ ")+x.url.replace("https://t.me/s/","@").replace("https://","")+(x.got?" ("+x.got+")":""),"chip sm "+(x.got?"ok":"no"));e.style.direction="ltr";cw.appendChild(e)});if(cw.childNodes.length)b.appendChild(cw)});
  once("srv",[s.servers,s.switches],()=>{const sv=$("servers");sv.textContent="";const T={yt:"یوتیوب",ig:"اینستاگرام",tg:"تلگرام"};
@@ -205,6 +224,9 @@ window.addEventListener("pagehide",()=>{try{navigator.sendBeacon("/api/closing?t
 $("discb").onclick=()=>api("/api/discover",{}).then(tick);
 $("learnreset").onclick=()=>{if(confirm("یادگیری پاک بشه؟"))api("/api/learn_reset",{}).then(tick)};
 $("tgbtn").onclick=()=>{$("tgonly").checked=true;api("/api/settings",cur()).then(()=>$("go").click())};
+$("callon").onchange=()=>api("/api/call",{on:$("callon").checked}).then(tick);
+$("calltest").onclick=()=>{const b=$("calltest");b.disabled=true;b.textContent="در حال تست …";api("/api/call/test",{}).then(()=>{b.disabled=false;b.textContent="تست آمادگی تماس";tick()}).catch(()=>{b.disabled=false;b.textContent="تست آمادگی تماس"})};
+$("callbest").onclick=()=>api("/api/call/best",{}).then(tick);
 $("sitesln").onclick=()=>{if(S.stage=="connected"){$("sitesln").textContent="در حال تست یوتیوب و اینستاگرام و تلگرام …";api("/api/sitecheck",{}).then(tick)}};
 $("chb").onclick=()=>{$("chm").textContent="در حال خوندن پیام‌ها … (تا ۴۵ ثانیه)";$("chb").disabled=true;api("/api/addsource",{text:$("chn").value}).then(r=>{$("chm").textContent=r.ok?r.found+" کانفیگ پیدا شد؛ کانال به منبع‌ها اضافه شد.":(r.error||"ناموفق");if(r.ok)$("chn").value="";$("chb").disabled=false;tick()}).catch(()=>{$("chm").textContent="ارتباط با برنامه قطع شد.";$("chb").disabled=false})};
 $("impb").onclick=()=>{$("impm").textContent="در حال بررسی … (اگه لینک ساب باشه تا ۳۰ ثانیه)";$("impb").disabled=true;api("/api/import",{text:$("imp").value}).then(r=>{$("impm").textContent=r.added?r.added+" کانفیگ اضافه شد.":r.error=="big"?"متن خیلی بزرگه (حداکثر حدود ۸ مگابایت). تکه‌تکه paste کن.":r.error=="http"?"فقط لینک https پشتیبانی می‌شه.":r.urls?"لینک دریافت نشد یا کانفیگی توش نبود.":"کانفیگ معتبری پیدا نشد.";if(r.added)$("imp").value="";$("impb").disabled=false}).catch(()=>{$("impm").textContent="ارتباط با برنامه قطع شد.";$("impb").disabled=false})};
