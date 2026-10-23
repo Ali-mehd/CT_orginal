@@ -67,6 +67,7 @@ print("5) call mode silences refill / bench / standby-sites (no tests, no backlo
 
 # ---- ۶) call_prepare: سرور فعلی خوبه → عوض نمی‌شه؛ بدتره و جایگزین واضحاً بهتره → عوض می‌شه؛ جایگزین بدتر از آب درآد → برمی‌گرده
 def setup(cur_q, cand_q):
+    W.CALL_MAX_RETRIES = 0
     W.set_call(True); W.GEN[0] += 1
     W.S.update(stage="connected", note="", warn="")
     act = mk("10.0.0.9"); best = mk("11.1.1.1", raw="vless://best:443")
