@@ -37,6 +37,9 @@ unzip -oq "$DL/sing-box.zip" -d "$T"
 cp "$T"/sing-box-*/sing-box.exe "$T"/sing-box-*/libcronet.dll "$T"/sing-box-*/LICENSE "$PAY/singbox/"
 
 cp app/*.py app/*.html "$PAY/app/"
+# تست‌ها کنار برنامه می‌رن: «اتاق تست» تکامل قبل از نصب هر وصله همه‌شون رو اجرا می‌کنه.
+mkdir -p "$PAY/tests"
+cp tests/t*.py "$PAY/tests/"
 for f in snapshot.txt blocklist.txt; do
   if [ -f "app/$f" ]; then cp "app/$f" "$PAY/app/"; fi
 done
@@ -47,7 +50,7 @@ if [ ! -f "$PAY/app/blocklist.txt" ]; then
     || echo "warning: bundled blocklist not generated; the app downloads it at runtime"
 fi
 
-(cd "$PAY" && zip -qr9X "$ROOT/launcher/payload.zip" python xray singbox app)
+(cd "$PAY" && zip -qr9X "$ROOT/launcher/payload.zip" python xray singbox app tests)
 
 WINDRES=$(command -v windres || command -v x86_64-w64-mingw32-windres || true)
 [ -n "$WINDRES" ] || { echo "windres not found (install binutils-mingw-w64-x86-64)" >&2; exit 1; }
