@@ -11,13 +11,25 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 DATA = Path(os.environ.get("CFG_DATA") or ROOT / "data")
 sys.path.insert(0, str(HERE))
+try:  # [evolve-guard] محافظ تکامل: اگه وصله‌ی تازه برنامه رو بالا نیاورد، خودش برمی‌گرده (این بخش رو وصله نباید حذف کنه)
+    import evolve as _ev  # noqa: E402
+    _ev.early_guard(ROOT, DATA)
+except SystemExit:
+    raise
+except Exception:
+    _ev = None
 import cfgscan, cfgforge, report  # noqa: E402
+cfgres = None  # تنظیم منابع فقط در نسخه‌ی اندروید هست
 import cfgcall  # noqa: E402
+try:
+    import cfgres  # noqa: E402  (تنظیم خودکار منابع؛ فقط اندروید داده‌اش می‌ده)
+except Exception:
+    cfgres = None
 try:
     import netprobe  # noqa: E402
 except Exception:  # بدون سنجش شبکه هم برنامه مثل قبل کار می‌کنه
     netprobe = None
-NETP = {"net": None}  # آخرین سنجش شبکه (کوتاه‌مدت؛ با عوض‌شدن اپراتور/مودم دوباره سنجیده می‌شه)
+NETP = {"net": None, "shown": None}  # آخرین سنجش شبکه (کوتاه‌مدت؛ با عوض‌شدن اپراتور/مودم دوباره سنجیده می‌شه)
 
 http.server.ThreadingHTTPServer.request_queue_size = 128  # پیش‌فرض ۵ است؛ چند درخواست هم‌زمان از رابط، اتصال‌ها رو رها نکنه
 
@@ -35,6 +47,9 @@ STOP, XRAY_PROC, WIN, PORT, TOKEN, _lock, PIPE = threading.Event(), None, None, 
 
 class Cancel(Exception):
     pass
+
+
+DIAG = {"tested": 0, "ok": 0, "no_reach": 0, "no_traffic": 0, "unsafe": 0, "skip": {}}  # شمارنده‌ی «چرا وصل نشد» (فقط عددهای کلی)
 
 
 def say(m):
@@ -196,23 +211,108 @@ def load_settings():
         return {}
 
 
+FA_SPEED = {"gentle": "آرام", "normal": "متعادل", "fast": "سریع", "turbo": "خیلی سریع"}
+FA_MODE = {"stable": "هوشمند", "fast": "سریع", "off": "خاموش"}
+
+
+def apply_live(j, old):
+    """تغییر تنظیمات کاربر همین لحظه (بدون ری‌استارت و بدون قطع اتصال) اعمال می‌شه؛ هر تغییر یک پیام فارسی برمی‌گردونه.
+    چیزی که وسط اتصال بدون قطع تماس شدنی نیست (پروفایل) صادقانه می‌گه «از اتصال بعدی».
+    پیام فقط وقتی داده می‌شه که مقدار نسبت به آخرین مقدار ذخیره‌شده واقعاً عوض شده باشه (باز شدن صفحه پیام الکی نمی‌سازه)."""
+    msgs, conn = [], S["stage"] == "connected"
+
+    def changed(k, mem):
+        return j.get(k) != old.get(k, mem)
+
+    sp = j.get("speed")
+    if _in(sp, SPEEDS):
+        ann = changed("speed", SPEED[0])
+        SPEED[0] = sp
+        if ann:
+            gs = cfgres.GOV.summary() if (cfgres is not None and ANDROID) else ""
+            msgs.append(f"سرعت اسکن روی «{FA_SPEED.get(sp, sp)}» رفت و همین الان اعمال شد." + (f" (ولی {gs})" if gs else ""))
+    md = j.get("mode")
+    if _in(md, ("stable", "fast", "off")):
+        ann = changed("mode", MODE[0])
+        MODE[0] = md
+        FAILOVER.set() if md != "off" else FAILOVER.clear()
+        if ann:
+            msgs.append(f"حالت جابه‌جایی «{FA_MODE[md]}» " + ("همین الان اعمال شد." if conn else "برای اتصال بعدی ذخیره شد."))
+    if isinstance(j.get("tgonly"), bool):
+        ann, was = changed("tgonly", TGONLY[0]), TGONLY[0]
+        TGONLY[0] = j["tgonly"]
+        if ann and was != TGONLY[0] and conn and POOL["active"]:
+            threading.Thread(target=sites_guard, args=(GEN[0], CUR[0], []), daemon=True).start()  # سرور فعلی با نیاز تازه سنجیده می‌شه؛ لازم بود جابه‌جا می‌شه
+        if ann:
+            msgs.append("حالت اضطراری (فقط تلگرام) روشن شد و همین الان اعمال شد." if TGONLY[0] else
+                        "حالت عادی (یوتیوب، اینستاگرام و تلگرام) برگشت؛ سرور فعلی همین الان بررسی می‌شه و اگه لازم باشه جابه‌جا می‌شه.")
+    if isinstance(j.get("sysproxy"), bool):
+        ann, was = changed("sysproxy", VPN_WANT[0]), VPN_WANT[0]
+        VPN_WANT[0] = j["sysproxy"]
+        if was != VPN_WANT[0] and conn and not ANDROID:
+            try:
+                set_proxy(HTTP) if VPN_WANT[0] else restore_proxy()
+            except Exception:
+                pass
+        if ann:
+            msgs.append(("پروکسی/VPN سراسری " + ("روشن" if VPN_WANT[0] else "خاموش") + " شد و همین الان اعمال شد.") if conn
+                        else "تنظیم پروکسی/VPN برای اتصال بعدی ذخیره شد.")
+    d = j.get("direct")
+    if isinstance(d, str) and (d == "" or _in(d, cfgforge.COUNTRY_DIRECT)):
+        ann, was = changed("direct", DIRECT[0]), DIRECT[0]
+        DIRECT[0] = d
+        if was != d and conn and POOL["active"]:
+            def rebuild():  # مسیرهای مستقیم داخل کانفیگ xray ساخته می‌شن؛ همون سرورها با قانون تازه دوباره بالا میان (حدود ۱–۲ ثانیه)
+                try:
+                    with SWITCH:
+                        if S["stage"] == "connected" and POOL["active"]:
+                            start_xray(list(POOL["active"]), CUR[0])
+                except Exception:
+                    pass
+            threading.Thread(target=rebuild, daemon=True).start()
+        if ann:
+            msgs.append("مسیر مستقیم کشور عوض شد و همین الان اعمال شد (اتصال حدود ۱–۲ ثانیه دوباره بالا میاد)." if (conn and POOL["active"])
+                        else "مسیر مستقیم کشور برای اتصال بعدی ذخیره شد.")
+    pf = j.get("profile")
+    if _in(pf, cfgforge.PROFILES) and changed("profile", CUR[0]):
+        msgs.append(f"حالت «{cfgforge.PROFILES[pf]['desc']}» ذخیره شد و از اتصال/جستجوی بعدی اعمال می‌شه "
+                    "(وسط اتصال عوضش نمی‌کنم که تماس قطع نشه).")
+    for k, fa in (("autosrc", "یافتن خودکار منابع"), ("autores", "تنظیم خودکار منابع گوشی")):
+        if k == "autores" and not ANDROID:
+            continue  # فقط در نسخه‌ی اندروید معنی داره
+        if isinstance(j.get(k), bool) and j[k] != (old.get(k, True) is not False):
+            msgs.append(f"{fa} " + ("روشن" if j[k] else "خاموش") + " شد و همین الان اعمال شد.")
+    if isinstance(j.get("quick"), bool) and "quick" in old and j["quick"] != old["quick"]:
+        msgs.append("نوع جستجو ذخیره شد و از جستجوی بعدی اعمال می‌شه.")
+    return msgs
+
+
 def save_settings(j):
     cur = load_settings()
+    applied = apply_live(j, cur)
     if _in(j.get("profile"), cfgforge.PROFILES):
         cur["profile"] = j["profile"]
     if _in(j.get("mode"), ("stable", "fast", "off")):
         cur["mode"] = j["mode"]
     if _in(j.get("speed"), SPEEDS):
         cur["speed"] = j["speed"]
-    for k in ("quick", "sysproxy", "tgonly", "autosrc", "call"):
+    for k in ("quick", "sysproxy", "tgonly", "autosrc", "call", "autores", "netprobe", "evolve_ok", "hc", "onboarded"):
         if isinstance(j.get(k), bool):
             cur[k] = j[k]
+    fs = j.get("fs")
+    if isinstance(fs, (int, float)) and not isinstance(fs, bool) and 0.8 <= fs <= 1.8:
+        cur["fs"] = round(float(fs), 2)  # اندازه‌ی نوشته (ضریب)؛ کاربر در شروع برنامه با دید خودش انتخاب می‌کنه
+    if _in(j.get("notemp"), ("gentle", "full")):
+        cur["notemp"] = j["notemp"]
+        if cfgres is not None:
+            cfgres.GOV.notemp = j["notemp"]
     if isinstance(j.get("tgonly"), bool):
         TGONLY[0] = j["tgonly"]
     if _in(j.get("direct", ""), cfgforge.COUNTRY_DIRECT) or j.get("direct") == "":
         cur["direct"] = j.get("direct", "")
     DATA.mkdir(parents=True, exist_ok=True)
     _atomic(SETTINGS, json.dumps(cur))
+    return applied
 
 
 
@@ -334,6 +434,8 @@ def check(c, rounds=1, timeout=3, speed=False, secs=3.0, sites=False, call=None)
         cc.pop("sites", None)
     try:
         cfgscan.live(cc, find_xray(), rounds, timeout, speed, secs, sites, CALL[0] if call is None else call)
+        if cc.get("call"):
+            callmem_note(cc, cc["call"])
     except Exception:
         cc["alive"] = False
     cc["verified_at"] = time.time()
@@ -345,7 +447,7 @@ def check(c, rounds=1, timeout=3, speed=False, secs=3.0, sites=False, call=None)
 def check_many(cs, rounds=1, timeout=3, workers=8, speed=False, secs=3.0, sites=False):
     if not cs:
         return []
-    with ThreadPoolExecutor(max_workers=min(workers, len(cs))) as ex:
+    with ThreadPoolExecutor(max_workers=min(res_workers(workers), len(cs))) as ex:
         return list(ex.map(lambda c: check(c, rounds, timeout, speed, secs, sites), cs))
 
 
@@ -827,10 +929,78 @@ def _failover(gen, profile, sysproxy, mode):
     threading.Thread(target=pipeline, args=(profile, True, sysproxy, mode, True), daemon=True).start()
 
 
+CALLMEM_FILE = DATA / "callmem.json"
+CALLMEM = {"a": {}}  # شبکه (هش) ← روش (proto/network/security) ← [تعداد مؤثر، جمع MOS، زمان آخر]؛ هیچ آدرس سروری ذخیره نمی‌شه
+_callmem_lock, _callmem_state = threading.Lock(), {"dirty": False, "t": 0.0}
+CALL_HALF = 6 * 3600.0  # نیمه‌عمر تجربه‌ی تماس؛ شرایط شبکه عوض می‌شه
+
+
+def _callmem_load():
+    try:
+        j = json.loads(CALLMEM_FILE.read_text(encoding="utf-8"))
+        out = {}
+        for ctx, ms in list((j.get("a") or {}).items())[:8]:
+            if not isinstance(ctx, str) or not isinstance(ms, dict):
+                continue
+            out[ctx] = {k: [float(v[0]), float(v[1]), float(v[2])] for k, v in list(ms.items())[:40]
+                        if isinstance(k, str) and isinstance(v, list) and len(v) == 3 and all(isinstance(x, (int, float)) for x in v)}
+        CALLMEM["a"] = out
+    except Exception:
+        CALLMEM["a"] = {}
+
+
+def callmem_save(force=False):
+    with _callmem_lock:
+        if not _callmem_state["dirty"] or (not force and time.time() - _callmem_state["t"] < 30):
+            return
+        _callmem_state.update(dirty=False, t=time.time())
+        try:
+            DATA.mkdir(parents=True, exist_ok=True)
+            CALLMEM_FILE.write_text(json.dumps(CALLMEM), encoding="utf-8")
+        except OSError:
+            pass
+
+
+def call_method(c):
+    return f"{c.get('proto')}/{c.get('network')}/{c.get('security')}"
+
+
+def callmem_note(c, q):
+    """نتیجه‌ی سنجش تماس یک سرور رو برای «همین شبکه» و «همین روش» به یادگیری اضافه می‌کنه (UDP نداشتن = MOS ۱)."""
+    ctx = NETID[0]
+    if not ctx or not q:
+        return
+    now = time.time()
+    with _callmem_lock:
+        ms = CALLMEM["a"].setdefault(ctx, {})
+        e = ms.get(call_method(c)) or [0.0, 0.0, now]
+        f = 0.5 ** (max(0.0, now - e[2]) / CALL_HALF)
+        ms[call_method(c)] = [e[0] * f + 1, e[1] * f + float(q.get("mos") or 1.0), now]
+        for k in sorted(ms, key=lambda k: ms[k][2])[:-40]:
+            ms.pop(k, None)
+        for k in sorted(CALLMEM["a"], key=lambda k: max([v[2] for v in CALLMEM["a"][k].values()] or [0]))[:-8]:
+            CALLMEM["a"].pop(k, None)
+        _callmem_state["dirty"] = True
+    callmem_save()
+
+
+def callmem_prior(c):
+    """میانگین MOS این روش روی این شبکه (اگه حداقل ~۳ نمونه‌ی تازه باشه)؛ وگرنه None."""
+    e = (CALLMEM["a"].get(NETID[0]) or {}).get(call_method(c))
+    if not e:
+        return None
+    f = 0.5 ** (max(0.0, time.time() - e[2]) / CALL_HALF)
+    return e[1] / e[0] if e[0] * f >= 3 else None
+
+
 def call_key(c):
-    """کلید رتبه‌ی «مناسب برای تماس»: اول سرورهایی که UDP رد می‌کنن و درجه‌ی قابل‌قبول دارن، بعد امتیاز MOS بالاتر."""
+    """کلید رتبه‌ی «مناسب برای تماس»: اول سرورهایی که UDP رد می‌کنن و درجه‌ی قابل‌قبول دارن، بعد امتیاز MOS بالاتر؛ سرورِ بدون اندازه‌گیری
+    با میانگین یادگرفته‌شده‌ی روشش روی همین شبکه (یا ۲٫۹ اگه چیزی نداریم) بعد از اندازه‌گیری‌شده‌های قابل‌قبول می‌شینه."""
     q = c.get("call")
-    return (0 if cfgcall.call_ok(q) else 1, -((q or {}).get("mos") or 0))
+    if q:
+        return (0 if cfgcall.call_ok(q) else 1, -(q.get("mos") or 0))
+    pr = callmem_prior(c)
+    return (1, -(pr if pr is not None else 2.9))
 
 
 def set_call(on):
@@ -854,6 +1024,19 @@ def call_tips(q):
     if (q.get("p50") or 0) >= 300:
         t.append("تأخیر بالاست: «بهترین سرور برای تماس» رو بزن تا سرور نزدیک‌تر/سریع‌تر انتخاب بشه.")
     return t
+
+
+def net_view():
+    """خلاصه‌ی بی‌خطر آخرین سنجش شبکه برای پنل تشخیص (بدون هیچ آدرس)."""
+    r = NETP.get("shown")
+    if not r:
+        return None
+    try:
+        return {"ok": bool(r.get("net_ok")), "t": r.get("t"), "ports": {str(k): v for k, v in (r.get("ports") or {}).items()},
+                "udp": r.get("udp"), "quic": r.get("quic"), "sni": r.get("sni_filtered"), "frag": r.get("frag"),
+                "clock": netprobe.clock_msg_fa(r) if (netprobe and netprobe.clock_bad(r)) else "", "id": (NETID[0] or "")[2:8]}
+    except Exception:
+        return None
 
 
 def call_state():
@@ -889,6 +1072,8 @@ def call_prepare(gen, profile, switch=True):
         if cur is None or GEN[0] != gen or not CALL[0]:
             return
         S["call"] = dict(cur, t=time.time())
+        if POOL["active"]:
+            callmem_note(POOL["active"][0], cur)
         S["note"] = f"حالت تماس: کیفیت فعلی {cur['grade_fa']} (MOS≈{cur['mos']})"
         cand = sorted([c for c in POOL["standby"] if sites_ok(c)], key=eff)[:6]
         if not cand:
@@ -964,6 +1149,7 @@ SPEEDS = {  # rate: تست اتصال در ثانیه، live: تست زنده‌
 }
 CALL = [bool(load_settings().get("call"))]  # «حالت تماس» (واتساپ/تلگرام): فقط شرایط تماس باکیفیت؛ بقیه‌ی کارها وظیفه‌ش نیست
 cfgforge.CALL[0] = CALL[0]
+_callmem_load()
 TGONLY = [bool(load_settings().get("tgonly"))]  # «حالت اضطراری: فقط تلگرام»؛ پیش‌فرض خاموشه و فقط سروری که هر سه سایت رو باز کنه قبول می‌شه
 SITE_CACHE = {}  # نتیجه‌ی تست سه سایت برای هر سرور در همین اجرا
 SPEED = [load_settings().get("speed", "normal") if load_settings().get("speed") in ("gentle", "normal", "fast", "turbo") else "normal"]
@@ -971,20 +1157,53 @@ SPEED = [load_settings().get("speed", "normal") if load_settings().get("speed") 
 
 def speed_params():
     p = dict(SPEEDS[SPEED[0]])
+    if _ev:  # تعداد تست هم‌زمان خودکار کم و زیاد می‌شه؛ نرخ ارسال (rate) دست‌نخورده می‌مونه
+        p = _ev.tune_params(p)
     if os.environ.get("CFG_ANDROID"):  # گوشی: حافظه و باتری محدوده؛ پردازه‌ی xray زیاد باعث بسته‌شدن برنامه توسط اندروید می‌شه
         p["live"], p["workers"] = min(p["live"], 12), min(p["workers"], 64)
+        if cfgres is not None and os.environ.get("CFG_RES") != "0" and load_settings().get("autores") is not False:
+            p = cfgres.GOV.apply(p)  # بر اساس رم/دما/باتری گوشی؛ بدون داده‌ی جاوا همین p می‌مونه
     return p
+
+
+def res_workers(n):
+    """تعداد نخ‌های کمکی (check_many و...) با ضریب منابع گوشی کم می‌شه؛ روی PC و بدون داده همون n."""
+    if cfgres is not None and ANDROID and os.environ.get("CFG_RES") != "0":
+        return cfgres.GOV.workers(n)
+    return n
+
+
+class DynLimit:
+    """مثل Semaphore ولی سقفش زنده از speed_params() خونده می‌شه؛ با داغ‌شدن گوشی تست‌های تازه کمتر شروع می‌شن و بعد خنک‌شدن آروم زیاد می‌شن
+    (تست‌هایی که در جریانن قطع نمی‌شن)."""
+
+    def __init__(self, get):
+        self.get, self.n, self.cv = get, 0, threading.Condition()
+
+    def __enter__(self):
+        with self.cv:
+            while self.n >= max(1, self.get()):
+                self.cv.wait(1.0)
+            self.n += 1
+        return self
+
+    def __exit__(self, *a):
+        with self.cv:
+            self.n -= 1
+            self.cv.notify()
 
 
 class Pace:
     """سقف نرخ اتصال‌های آزمایشی (در ثانیه)؛ شبکه و اپراتور رو اذیت نکنه و شبیه اسکن پورت نباشه."""
 
-    def __init__(self, rate):
-        self.iv, self.t, self.lock = 1.0 / rate, 0.0, threading.Lock()
+    def __init__(self, rate):  # rate: عدد یا تابعی که نرخ زنده رو برمی‌گردونه
+        self.rate, self.t, self.lock = rate, 0.0, threading.Lock()
 
     def wait(self):
         with self.lock:
             now = time.time()
+            r = self.rate() if callable(self.rate) else self.rate
+            self.iv = 1.0 / max(0.5, r)
             self.t = max(self.t, now) + self.iv
             w = self.t - self.iv - now
         if w > 0:
@@ -1040,6 +1259,7 @@ def supervisor(gen, profile, sysproxy, mode):
     hist, fails, warned = deque(maxlen=45), 0, False
     t_switch = t_eval = t_ref = time.time()
     while GEN[0] == gen and S["stage"] == "connected":
+        mode = MODE[0]  # کاربر وسط اتصال حالت جابه‌جایی رو عوض کرده باشه همین لحظه اعمال می‌شه
         time.sleep(0.5 if (mode == "fast" or fails) else random.uniform(2.0, 4.0))  # سالم: کم‌تعداد و نامنظم؛ مشکوک: سریع‌تر
         if GEN[0] != gen or S["stage"] != "connected":
             return
@@ -1061,6 +1281,7 @@ def supervisor(gen, profile, sysproxy, mode):
             continue
         okr = [h for h in hist if h]
         lk = link_state(hist, fails)
+        S["link"] = lk
         if lk in ("jittery", "lossy") and not S.get("warn"):
             S["warn"] = "نوسان" if lk == "jittery" else "افت"
             S["warn"] = f"{S['warn']} شدید در اتصال فعلی؛ تا قطعِ کامل سرور عوض نمی‌شه."
@@ -1283,7 +1504,9 @@ def learn_reset():
         _learn_state["dirty"] = False
         BAD["h"].clear()
         _bad_state["dirty"] = False
-    for f in (LEARN_FILE, BAD_FILE):
+        CALLMEM["a"] = {}
+        _callmem_state["dirty"] = False
+    for f in (LEARN_FILE, BAD_FILE, CALLMEM_FILE):
         try:
             f.unlink()
         except OSError:
@@ -1649,13 +1872,21 @@ def discover_sources(force=False):
 
 def prune_sources():
     """منبع خودکاری که کلی سرور ازش تست شده ولی هیچ‌وقت هیچ سروری که شرط سایت‌ها رو داشته باشه نداده، غیرفعال می‌شه.
+    منبعی که خودکار غیرفعال شده بود بعد از ۱۴ روز یک شانس دوباره می‌گیره (با آمار صفر)؛ اگه باز هم بد بود دیگه برنمی‌گرده.
     منبع‌های خودت (پیش‌فرض، کانال، دستی) هیچ‌وقت خودکار غیرفعال نمی‌شن."""
     try:
-        db, ch = load_db(), False
+        db, ch, now = load_db(), False, time.time()
         for x in db["sources"]:
+            if x.get("kind") == "auto" and not x.get("on") and x.get("auto_off") and not x.get("revived") \
+                    and now - float(x.get("off_t") or now) > 14 * 86400:
+                x["on"], x["revived"], ch = True, True, True
+                with _learn_lock:
+                    LEARN["f"].pop(_uk(x["url"]), None)
+                _learn_state["dirty"] = True
+                continue
             v = source_v(x["url"]) if x.get("kind") == "auto" and x.get("on") else None
             if v and v[0] >= 200 and v[3] == 0 and v[1] / v[0] < 0.03:
-                x["on"], x["auto_off"], ch = False, True, True
+                x["on"], x["auto_off"], x["off_t"], ch = False, True, now, True
         if ch:
             save_db(db)
     except Exception:
@@ -2003,9 +2234,10 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
             hard_cap *= 2
         seen, cands, origin, fst = set(), [], {}, {"n": 0}
         sp = speed_params()
-        q, sem, lock, pend, blk = queue.Queue(), threading.Semaphore(sp["live"]), threading.Lock(), [0], [0]
+        q, sem, lock, pend, blk = queue.Queue(), DynLimit(lambda: speed_params()["live"]), threading.Lock(), [0], [0]
         skip = {"unsupported": 0, "insecure": 0}
-        pace = Pace(sp["rate"] * (1 if level == 1 else 2))
+        DIAG.update(tested=0, ok=0, no_reach=0, no_traffic=0, unsafe=0, skip=skip)
+        pace = Pace(lambda: speed_params()["rate"] * (1 if level == 1 else 2))
         ex = ThreadPoolExecutor(max_workers=sp["workers"])
         found, connected, fails, t0, t_first = [], [False], [0], time.time(), [None]
         fetch_done = threading.Event()
@@ -2021,6 +2253,7 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
                     return
                 old = NETP["net"]
                 r = old if (old and level == 1 and time.time() - old["t"] < 120) else netprobe.probe(STOP.is_set)
+                NETP["shown"] = r
                 if not r or not r.get("net_ok"):
                     return
                 NETP["net"], net[0] = r, r
@@ -2063,6 +2296,9 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
                         try_variants(c, xray, tmo[1])
                 c["tested"] = True
             finally:
+                if c.get("tested"):
+                    DIAG["tested"] += 1
+                    DIAG["no_reach" if not c.get("reachable") else "unsafe" if danger(c) else "ok" if c.get("alive") else "no_traffic"] += 1
                 if c.get("tested") and not clock[0]:  # ساعت غلط = نتیجه‌ی تست قابل‌اعتماد نیست؛ چیزی یاد گرفته/قرنطینه نشه
                     learn_record(c, "live")
                     # نتیجه فقط جمع می‌شه؛ آخر اسکن و فقط اگه شبکه سالم بوده ثبت می‌شه (_commit_bad). قطعی اینترنت یا شبکه‌ی دستکاری‌کننده
@@ -2365,6 +2601,13 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
         LEARN["runs"] += 1
         _learn_state["dirty"] = True
         learn_save(True)
+        if _ev and not auto:  # ثبت نتیجه برای تنظیم خودکار تعداد تست هم‌زمان
+            try:
+                real = [c for c in tested if c.get("src") != "good"]
+                _ev.tune_note(len(real), sum(1 for c in real if c.get("alive")), (t_first[0] - t0) if t_first[0] else None)
+                threading.Thread(target=_ev.enforce, daemon=True).start()
+            except Exception:
+                pass
         if not clock[0]:
             _commit_bad(pend)
         bad_save(True)
@@ -2495,6 +2738,10 @@ def state():
     d["sources"] = load_db()["sources"]
     d["win"] = os.name == "nt"
     d["android"], d["vpn"] = ANDROID, VPN[0]
+    d["res"] = cfgres.GOV.summary() if (cfgres is not None and ANDROID) else ""
+    d["sensors"] = (dict(blind=cfgres.GOV.temp_blind(), mode=cfgres.GOV.notemp)
+                    if (cfgres is not None and ANDROID and cfgres.GOV.active()) else None)
+    d["res_info"] = cfgres.GOV.report_fa() if (cfgres is not None and ANDROID) else ""
     d["sites"], d["fetch"] = POOL.get("sites"), FETCHINFO
     d["cdp"] = CDP[0]
     d["methods"] = report.table(RUN["methods"], 8)
@@ -2509,6 +2756,8 @@ def state():
     d["settings"] = load_settings()
     d["tgonly"], d["tiers"], d["learn"] = TGONLY[0], POOL.get("tiers"), learn_summary()
     d["call"] = call_state()
+    d["net"], d["diag"], d["link"], d["evolve"] = net_view(), dict(DIAG, skip=dict(DIAG.get("skip") or {})), S.get("link", ""), bool(_ev)
+    d["bench"] = len(POOL.get("bench") or [])
     d["disc"] = dict(DISC, last=LEARN["disc_t"])
     d["autosrc"] = [dict(url=x["url"], got=x.get("got", 0), on=bool(x.get("on")), off=bool(x.get("auto_off")),
                          tested=int((source_v(x["url"]) or [0])[0]), passed=int((source_v(x["url"]) or [0, 0, 0, 0])[3]))
@@ -2537,6 +2786,7 @@ def quit_app(uninstall=False):
 def shutdown():
     learn_save(True)  # یادگیری و حافظه‌ی بد با بستن برنامه از دست نمی‌رن
     bad_save(True)
+    callmem_save(True)
     disconnect(silent=True)
     try:
         (DATA / "run.json").unlink()
@@ -2548,6 +2798,91 @@ def shutdown():
 
 
 MAX_BODY = 8_000_000  # بزرگ‌ترین بدنه‌ی POST (افزودن دستی تا ۲ میلیون کاراکتر فارسی/یونیکد قبول می‌کنه)
+
+
+def _cfg_row(c):
+    """فقط ویژگی‌های بی‌خطر یک کانفیگ؛ آدرس، شناسه و نام هرگز."""
+    return {k: c.get(k) for k in ("proto", "network", "security", "port", "ms", "kbps", "src", "alive", "reachable", "flow", "fp", "alpn", "scy", "frag", "mode", "insecure") if k in c}
+
+
+def evolve_ctx():
+    """آمار کامل برنامه برای گزارش تکامل. آدرس منبع‌های عمومی گیت‌هاب فقط به شکل «مالک/ریپو/فایل» میاد؛
+    هیچ لینک شخصی، کانال، آدرس سرور یا توکنی نمیاد (و بعدش همه‌چیز دوباره فیلتر می‌شه)."""
+    srcs = []
+    for x in load_db()["sources"]:
+        u = x.get("url", "")
+        pu = urllib.parse.urlsplit(u)
+        if pu.scheme == "https" and pu.hostname in ("raw.githubusercontent.com", "github.com") and not pu.query:
+            v = source_v(u)
+            srcs.append({"src": pu.path.strip("/")[:90], "kind": x.get("kind", "default"), "on": bool(x.get("on")),
+                         "got": x.get("got", 0), "alive": x.get("alive", 0), "yield": round(source_yield(u), 4),
+                         "auto_off": bool(x.get("auto_off")), "revived": bool(x.get("revived")),
+                         "age_d": round((time.time() - x.get("added", time.time())) / 86400, 1) if x.get("added") else None,
+                         "learn": [round(n, 1) for n in v] if v else None})
+    ls = learn_summary()
+    if ls:
+        ls = dict(ls, source=[urllib.parse.urlsplit(u).path.strip("/")[:90] for u in ls.get("source", [])])
+    st = load_settings()
+    now = time.time()
+    f = LEARN["f"]
+    tables = {}
+    for pre, name in (("p:", "proto"), ("n:", "network"), ("o:", "port"), ("s:", "security"), ("t:", "tls")):
+        rows = sorted(((k[len(pre):], [round(x, 1) for x in v]) for k, v in f.items() if k.startswith(pre)), key=lambda r: -r[1][0])[:40]
+        if rows:
+            tables[name] = dict(rows)
+    other = sum(1 for k in f if not k[:2] in ("p:", "n:", "o:", "s:", "t:"))
+    bad_kinds = {}
+    for v in BAD["h"].values():
+        k = v[2] if len(v) > 2 else "?"
+        bad_kinds[k] = bad_kinds.get(k, 0) + 1
+    nets = {k: {"keys": len(v.get("k", {})), "last_h_ago": round((now - v.get("last", 0)) / 3600, 1)} for k, v in list(LEARN["a"].items())[:20]}
+    try:
+        sp = speed_params()
+    except Exception:
+        sp = {}
+    pool = {"switches": POOL.get("switches", 0), "active": [_cfg_row(c) for c in POOL.get("active", [])[:10] if isinstance(c, dict)],
+            "standby": [_cfg_row(c) for c in POOL.get("standby", [])[:30] if isinstance(c, dict)],
+            "standby_n": len(POOL.get("standby", [])), "backlog_n": len(POOL.get("backlog", []))}
+    return {"settings": {k: st.get(k) for k in ("profile", "mode", "speed", "quick", "sysproxy", "tgonly", "autosrc", "call", "direct")},
+            "speed_now": SPEED[0], "speed_effective": sp, "speed_table": SPEEDS, "profile_now": CUR[0],
+            "flags": {"tgonly": TGONLY[0], "call": CALL[0], "vpn": VPN[0], "vpn_want": VPN_WANT[0], "background": BG[0], "android": bool(ANDROID),
+                      "xray_running": bool(XRAY_PROC), "pipeline_alive": bool(PIPE and PIPE.is_alive()), "ports": {"socks": SOCKS, "http": HTTP}},
+            "stage": {"stage": S["stage"], "step": S["step"], "pct": S["pct"], "msg": S["msg"], "note": S["note"], "warn": S["warn"],
+                      "blocked": S["blocked"], "connected": bool(S.get("connected"))},
+            "stats": CUM, "last_run": RUN, "learn": ls, "learn_tables": tables, "learn_other_keys": other,
+            "learn_state": {"runs": LEARN["runs"], "keys": len(f), "sec_keys": len(LEARN["s"]), "nets": nets, "disc_ok": LEARN["disc_ok"],
+                            "disc_h_ago": round((now - LEARN["disc_t"]) / 3600, 1) if LEARN["disc_t"] else None},
+            "learn_constants": {"prior": LEARN_PRIOR, "max_keys": LEARN_MAX_KEYS, "auto_max": AUTO_MAX, "bad_hours": BAD_HOURS,
+                                "bad_explore": BAD_EXPLORE, "bench_steps": BENCH_STEPS},
+            "quarantine": {"total": len(BAD["h"]), "active": sum(1 for v in BAD["h"].values() if v[0] > now), "by_kind": bad_kinds},
+            "discovery": {k: DISC.get(k) for k in ("t", "msg", "added", "running")},
+            "netprobe": NETP.get("net"), "pool": pool, "sources": srcs[:60],
+            "blocklist_entries": (lambda b: len(b) if hasattr(b, "__len__") else None)(getattr(cfgscan, "BLOCK", None)),
+            "recent_log": S["log"][-60:]}
+
+
+def evolve_post(p, j):
+    try:
+        if p in ("/api/evolve/inspect", "/api/evolve/apply"):
+            data = base64.b64decode(str(j.get("b64", "")), validate=True)
+            if p.endswith("inspect"):
+                return _ev.inspect_patch(data)
+            if S["stage"] == "running":
+                return {"ok": False, "errors": ["الان جستجو در حاله؛ بعد از پایانش نصب کن."]}
+            if load_settings().get("evolve_ok") is not True:  # پیش‌فرض خاموشه: نصب وصله = اجرای کد تازه؛ فقط وقتی خودت روشنش کنی
+                return {"ok": False, "errors": ["نصب وصله خاموشه. اول توی همین تب کلید «اجازه‌ی نصب وصله» رو روشن کن."]}
+            return {"ok": _ev.apply_patch(data)}
+        if p == "/api/evolve/rollback":
+            ok, msg = _ev.rollback("original" if j.get("mode") == "original" else "last")
+            return {"ok": ok, "msg": msg}
+        if p == "/api/evolve/cap":
+            return {"ok": True, "freed": _ev.set_cap(int(j.get("mb", 20)))}
+        if p == "/api/evolve/autotune":
+            _ev.set_autotune(bool(j.get("on")))
+            return {"ok": True}
+    except Exception:
+        return {"ok": False, "errors": ["درخواست نامعتبر بود."]}
+    return {"ok": False, "errors": ["نامعلوم"]}
 
 
 class H(http.server.BaseHTTPRequestHandler):
@@ -2592,12 +2927,25 @@ class H(http.server.BaseHTTPRequestHandler):
             nonce = secrets.token_urlsafe(12)  # فقط اسکریپت خودِ برنامه اجرا بشه؛ حتی اگه یه روز محتوای تزریقی به صفحه برسه نمی‌تونه کد اجرا کنه یا چیزی بیرون بفرسته
             html = ((HERE / "ui.html").read_text(encoding="utf-8").replace("__T__", TOKEN)
                     .replace("<script>", f'<script nonce="{nonce}">', 1))
+            if not _ev:  # تکامل (نصب وصله) فقط وقتی ماژولش هست؛ اندروید فایل‌های برنامه رو فقط‌خواندنی داره
+                html = html.replace('["evo","تکامل"],', "")
             csp = (f"default-src 'none'; script-src 'nonce-{nonce}'; style-src 'unsafe-inline'; img-src 'self' data:; "
                    "connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'")
             return self.reply(200, html.encode(), "text/html; charset=utf-8", {"Content-Security-Policy": csp})
         if u.path == "/api/state":
             S["beat"] = time.time()
             return self.reply(200, state())
+        if u.path == "/api/evolve" and _ev:
+            return self.reply(200, _ev.status())
+        if u.path == "/api/evolve/report" and _ev:  # فایل گزارش مهرشده برای Claude
+            plain = bool(q.get("plain"))
+            rid, text = _ev.make_report(evolve_ctx(), plain=plain)
+            try:
+                _ev.save_report_file(text)
+            except OSError:
+                pass
+            return self.reply(200, text.encode("utf-8"), "text/plain; charset=utf-8",
+                              {"Content-Disposition": 'attachment; filename="ConfigTool-report-%s.%s"' % (time.strftime("%Y%m%d-%H%M"), "txt" if plain else "ctreport")})
         if u.path == "/report":
             hdr = {"Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; "
                                               "form-action 'none'; frame-ancestors 'none'"}
@@ -2622,6 +2970,8 @@ class H(http.server.BaseHTTPRequestHandler):
         except Exception:
             return self.reply(400, {"error": "bad"})
         p = u.path
+        if p.startswith("/api/evolve") and _ev:
+            return self.reply(200, evolve_post(p, j))
         if p == "/api/call":
             on = bool(j.get("on"))
             set_call(on)
@@ -2743,7 +3093,10 @@ class H(http.server.BaseHTTPRequestHandler):
                 CLOSING[0] = time.time()
                 threading.Thread(target=closing_check, args=(time.time(),), daemon=True).start()
         elif p == "/api/settings":
-            save_settings(j)
+            applied = save_settings(j)
+            if applied:
+                say("تنظیمات: " + " ".join(applied))
+            return self.reply(200, {"ok": True, "applied": applied})
         elif p == "/api/hide":
             BG[0] = True
             close_window()
@@ -3088,6 +3441,10 @@ def main():
     S["beat"] = time.time()
     threading.Thread(target=startup_refresh, daemon=True).start()
     threading.Thread(target=daily_refresh, daemon=True).start()
+    if _ev:
+        _ev.hook_errors()  # خطاهای کنترل‌نشده برای گزارش ثبت می‌شن
+        _ev.confirm_later()  # چند ثانیه سالم موندن = وصله‌ی تازه تأیید می‌شه
+        threading.Thread(target=_ev.enforce, daemon=True).start()
     open_window(url)
     while True:
         time.sleep(3600)

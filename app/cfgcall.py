@@ -84,8 +84,9 @@ def _unwrap(data):
 
 
 def measure(port, count=20, interval=0.05, wait=1.5, targets=STUN_TARGETS):
-    """از تونل محلی (SOCKS5 روی port) چند پرسش STUN می‌فرسته. [RTT میلی‌ثانیه یا None] به‌ترتیب ارسال، یا None اگه UDP
-    اصلاً برقرار نشد (تونل UDP نمی‌ده). زمان کل ≤ count*interval + wait + ~۳ ثانیه."""
+    """از تونل محلی (SOCKS5 روی port) به هر سرور STUN `count` پرسش می‌فرسته (به‌صورت یک‌درمیان). اگه یکی از سرورهای STUN روی
+    شبکه‌ی تو بسته باشه، نباید «افت بسته» حساب بشه؛ پس فقط سرِی برگردونده می‌شه که بهترین جواب‌دهی رو داشته (بیشترین جواب،
+    بعد کمترین RTT میانه). خروجی: [RTT میلی‌ثانیه یا None] یا None اگه UDP اصلاً برقرار نشد. زمان کل ≲ count*len(targets)*interval + wait + ~۳ ثانیه."""
     try:
         ctl, relay = _associate(port, 3.0)
     except OSError:
@@ -93,23 +94,25 @@ def measure(port, count=20, interval=0.05, wait=1.5, targets=STUN_TARGETS):
     u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         u.setblocking(False)
-        sent, rtt = {}, [None] * count
+        nt = len(targets)
+        total = count * nt
+        sent, rtt = {}, [[None] * count for _ in range(nt)]
         t0 = time.monotonic()
-        end = t0 + count * interval + wait
+        end = t0 + total * interval + wait
         i = 0
         while time.monotonic() < end:
             now = time.monotonic()
-            if i < count and now >= t0 + i * interval:
+            if i < total and now >= t0 + i * interval:
                 pkt, txn = stun_request()
-                host, p = targets[i % len(targets)]
-                sent[txn] = (i, now)
+                host, p = targets[i % nt]
+                sent[txn] = (i // nt, i % nt, now)
                 try:
                     u.sendto(_wrap(host, p, pkt), relay)
                 except OSError:
                     pass
                 i += 1
                 continue
-            nxt = (t0 + i * interval - now) if i < count else (end - now)
+            nxt = (t0 + i * interval - now) if i < total else (end - now)
             r, _, _ = select.select([u], [], [], max(0.0, min(0.02, nxt)))
             while r:
                 try:
@@ -118,11 +121,15 @@ def measure(port, count=20, interval=0.05, wait=1.5, targets=STUN_TARGETS):
                     break
                 body = _unwrap(data)
                 if body and len(body) >= 20 and body[8:20] in sent:
-                    idx, ts = sent[body[8:20]]
-                    if stun_ok(body, body[8:20]) and rtt[idx] is None:
-                        rtt[idx] = (time.monotonic() - ts) * 1000.0
+                    idx, ti, ts = sent[body[8:20]]
+                    if stun_ok(body, body[8:20]) and rtt[ti][idx] is None:
+                        rtt[ti][idx] = (time.monotonic() - ts) * 1000.0
                 r, _, _ = select.select([u], [], [], 0)
-        return rtt
+
+        def rank(series):
+            ok = sorted(x for x in series if x is not None)
+            return (-len(ok), ok[len(ok) // 2] if ok else 1e9)
+        return min(rtt, key=rank)
     finally:
         u.close()
         ctl.close()
