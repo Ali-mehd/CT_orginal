@@ -52,7 +52,14 @@ func unpack(root string) error {
 		return err
 	}
 	for _, d := range dirs {
-		if err := os.RemoveAll(filepath.Join(root, d)); err != nil {
+		p := filepath.Join(root, d)
+		err := os.RemoveAll(p)
+		if err != nil { // معمولاً xray یتیم از دفعه‌ی قبل فایل رو قفل کرده؛ بستنش و یک بار دیگه تلاش
+			logf("remove %s failed: %v; closing leftover processes", d, err)
+			killStale(root)
+			err = os.RemoveAll(p)
+		}
+		if err != nil {
 			return fmt.Errorf("برنامه هنوز در حال اجراست یا فایل‌هاش قفله. اول ConfigTool رو کامل ببند (از دکمه‌ی خروج)، بعد دوباره اجرا کن.\n(%v)", err)
 		}
 	}
@@ -109,6 +116,7 @@ func startCore(root, py string) (*app, error) {
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
+	bindToJob(cmd) // هسته و xray با بسته‌شدن لانچر (حتی End Task) با هم بسته می‌شن
 	a := &app{cmd: cmd, dataDir: dataDir, exited: make(chan struct{})}
 	go func() { cmd.Wait(); close(a.exited) }()
 	u, gone, err := waitURL(urlFile, a.exited, 40*time.Second)
@@ -173,7 +181,8 @@ func main() {
 	logf("core ready orphan=%v", a.orphan)
 	if !runGUI(a) {
 		logf("fallback: opened in browser")
-		return // پنجره‌ی داخلی ساخته نشد؛ در مرورگر باز شد و برنامه ادامه می‌ده
+		releaseJob() // در مرورگر باز شده؛ با رفتن لانچر هسته نباید بمیره
+		return       // پنجره‌ی داخلی ساخته نشد؛ در مرورگر باز شد و برنامه ادامه می‌ده
 	}
 	if !a.orphan {
 		select {

@@ -17,3 +17,9 @@ func killCore(a *app) {
 		a.cmd.Process.Kill()
 	}
 }
+
+func bindToJob(c *exec.Cmd) {}
+
+func releaseJob() {}
+
+func killStale(root string) {}
