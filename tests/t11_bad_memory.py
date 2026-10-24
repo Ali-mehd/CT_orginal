@@ -34,8 +34,9 @@ assert W.BAD["salt"]==salt and set(W.BAD["h"])==set(snap); print("survives resta
 W2=W.BAD["salt"]; W.BAD["salt"]="other"; assert W.bad_key(c3)!=hashlib.sha256((W2+"|9.9.9.9|443|vless").encode()).hexdigest()[:16]; W.BAD["salt"]=W2
 # ---- 5) security learning: risky feature gets a lower score and shows up in the summary
 good=mk("a.example",proto="vless",net="ws",src="https://x/y.txt"); risky=mk("b.example",proto="vmess",net="tcp",src="https://x/y.txt")
-for _ in range(40): W.sec_record(risky,True)
-for _ in range(40): W.sec_record(good,False)
+# ۴۰ سرور متفاوت از ۸ منبع مختلف (هر سرور در روز یک بار، و هر منبع حداکثر ۵ «خطرناک» در روز به ویژگی‌های عمومی می‌دهد)
+for i in range(40): W.sec_record(dict(risky,host=f"r{i}.example",srcurl=f"https://x{i%8}/y.txt"),True)
+for i in range(40): W.sec_record(dict(good,host=f"g{i}.example",srcurl=f"https://x{i%8}/y.txt"),False)
 for _ in range(40): W.learn_record(dict(good),"live"); W.learn_record(dict(risky),"live")
 s_good,s_risky=W.learn_score(good),W.learn_score(risky); print("score safe=%.3f risky=%.3f"%(s_good,s_risky)); assert s_risky<s_good*0.8
 print("summary:",W.learn_summary()["risky"],"| quarantined:",W.learn_summary()["quarantined"]); assert any("vmess" in x for x in W.learn_summary()["risky"])

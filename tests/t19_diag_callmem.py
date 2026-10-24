@@ -76,6 +76,6 @@ print("3) state exposes net/diag/link/bench/evolve; JSON-safe; failed probe is s
 
 # ---- ۴) رابط: بدون ماژول تکامل (اندروید) تب «تکامل» نمایش داده نمی‌شه
 src = next(p for p in (W.HERE / "ui.html", W.HERE.parent / "assets" / "web" / "ui.html") if p.exists()).read_text(encoding="utf-8")
-assert '["evo","تکامل"],' in src and 'data-p="diag"' in src and 'id="npon"' in src and 'id="evok"' in src
+assert 'id="sec-evo"' in src and 'id="sec-diag"' in src and 'data-p="adv"' in src and 'id="npon"' in src and 'id="evok"' in src
 print("4) UI has the diagnostics tab, network-probe switch and install-patch switch OK")
 print("ALL OK")
