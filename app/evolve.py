@@ -174,10 +174,16 @@ def _clean(o, depth=0):
 
 
 # ------------------------------------------------------------ گزارش
+def _appdir():
+    """پوشه‌ی کد برنامه. توی اندروید فایل‌ها توی پوشه‌ی تخت کنار همین فایل‌اند (نه ROOT/app)؛ اونجا فقط گزارش کار می‌کنه."""
+    d = ROOT / "app"
+    return d if d.is_dir() else Path(__file__).resolve().parent
+
+
 def code_files():
     out = []
     try:
-        for p in sorted((ROOT / "app").iterdir()):
+        for p in sorted(_appdir().iterdir()):
             if p.is_file() and p.suffix in (".py", ".html", ".txt") and p.name not in ("blocklist.txt", "snapshot.txt"):
                 b = p.read_bytes()
                 out.append({"path": "app/" + p.name, "sha256": _sha(b), "lines": b.count(b"\n"), "size": len(b)})
@@ -188,7 +194,7 @@ def code_files():
 
 def code_size():
     try:
-        return sum(p.stat().st_size for p in (ROOT / "app").iterdir()
+        return sum(p.stat().st_size for p in _appdir().iterdir()
                    if p.is_file() and p.suffix in (".py", ".html", ".txt") and p.name not in ("blocklist.txt", "snapshot.txt"))
     except OSError:
         return 0
