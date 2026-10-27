@@ -39,7 +39,7 @@ func logf(format string, args ...any) {
 	fmt.Fprintf(f, "%s %s\n", time.Now().Format("2006-01-02 15:04:05"), fmt.Sprintf(format, args...))
 }
 
-var dirs = []string{"python", "xray", "singbox", "app"} // پوشه‌ی data (تنظیمات و سرورهای ذخیره‌شده) دست نمی‌خوره
+var dirs = []string{"python", "xray", "singbox", "app", "tests"} // پوشه‌ی data (تنظیمات و سرورهای ذخیره‌شده) دست نمی‌خوره
 
 func isFile(p string) bool { st, err := os.Stat(p); return err == nil && !st.IsDir() }
 
@@ -111,7 +111,7 @@ func startCore(root, py string) (*app, error) {
 	exe, _ := os.Executable()
 	cmd := exec.Command(py, "-X", "utf8", filepath.Join(root, "app", "cfgweb.py"))
 	cmd.Dir = root
-	cmd.Env = append(os.Environ(), "PYTHONUTF8=1", "CFG_EXE_DIR="+filepath.Dir(exe), "CFG_EMBEDDED=1", "CFG_DATA="+dataDir)
+	cmd.Env = append(os.Environ(), "PYTHONUTF8=1", "CFG_EXE_DIR="+filepath.Dir(exe), "CFG_EXE="+exe, "CFG_EMBEDDED=1", "CFG_DATA="+dataDir)
 	hide(cmd)
 	if err := cmd.Start(); err != nil {
 		return nil, err
