@@ -52,6 +52,20 @@ assert C([fl(host="example.com", sport=50005)], 5, 5, {50005: "keepassxc.exe"}) 
 assert C([fl(proto="udp", host="1.2.3.4", port=3478, sport=61004), fl(host="ib.bank-example.ir", sport=50006)], 48, 52) == "call"  # تماس از حساس جلوتره
 print("3) classification: upload/download/call/secure/interactive/normal/idle with priorities OK")
 
+# ۳ب) یوتیوب: اتصال ویدیو چند دقیقه باز می‌مونه و «اتصال تازه» نداره؛ با حافظه‌ی میزبان، دانلود حجیم حساب نمی‌شه (گزارش ۲۷ اکتبر)
+def Cm(flows, up, dn, mem, procs=None): return A.classify(flows, rates(up, dn), procs, NOW, mem)[0]
+assert Cm([], 40, 6000, {"inter": NOW - 40}) == "interactive"            # ۴۰ ثانیه پیش «googlevideo» دیده شده، حالا بدون اتصال تازه
+assert Cm([], 40, 6000, {"inter": NOW - 400}) == "download"              # حافظه‌ی کهنه ← دانلود فایل
+assert Cm([], 2, 3, {"inter": NOW - 30}) == "idle" or Cm([], 2, 3, {"inter": NOW - 30}) == "normal"   # ترافیک ناچیز
+assert Cm([], 900, 40, {"inter": NOW - 30}) == "upload"                  # آپلود (مثلاً به اینستاگرام) آپلود می‌مونه
+assert Cm([], 5, 5, {"sens": NOW - 60}) == "secure"                      # صفحه‌ی بانک باز مونده
+assert Cm([], 5, 5, {"sens": NOW - 600}) != "secure"
+S = A.Sampler(); n = time.time()
+S.feed_line("2026/10/25 12:43:00.2 from 127.0.0.1:50001 accepted tcp:rr3---sn-x.googlevideo.com:443 [http-in >> proxy-1]"); S.flows[-1]["t"] = n
+assert abs(S.mem["inter"] - n) < 1 and S.mem["sens"] == 0
+S.reset(); assert S.mem["inter"] == 0
+print("3b) YouTube-style long-lived streams stay 'interactive' via host memory; stale memory / tiny traffic do not OK")
+
 # ۴) هیسترزیس
 T = A.Tracker(); t0 = NOW
 T.update("idle", now=t0)

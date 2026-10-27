@@ -86,6 +86,7 @@ def pol(act_name, rate_kbit, crawl_age, since=30):
     W._auto_policy(W.GEN[0], "auto", {"act": act_name, "since": since})
     time.sleep(0.05); return calls
 assert pol("upload", 300, 50) == ["upload"]                 # لاک‌پشتی + ۵۰ ثانیه ← سنجش
+assert pol("upload", 20, 50) == [] and pol("download", 5, 50) == []   # نرخ نزدیک صفر = انتقال تموم/متوقف شده، نه «کند» (باگِ سوییچ بی‌دلیل وسط یوتیوب)
 assert pol("upload", 300, 10) == []                         # هنوز زوده
 assert pol("upload", 3000, 50) == []                        # سرعت خوبه
 assert pol("download", 900, 50) == ["download"]
