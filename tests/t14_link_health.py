@@ -93,8 +93,8 @@ assert W.POOL["refill_fast"] > time.time() and "وصل موندم" in W.S["note"
 print("4a) no replacement + server still answering -> stay connected, refill speeds up, no restart, no strike OK")
 W.probe = lambda *a, **k: None   # تونل کاملاً مرده
 fresh_pool(); W.POOL["standby"] = []
-W._failover(W.GEN[0], "balanced", False, "stable"); time.sleep(0.3)
-assert calls and W.POOL["bench"], "تونل مرده: اسکن تازه شروع می‌شه و سرور برای بازبینی کنار می‌ره"
+r4 = W._failover(W.GEN[0], "balanced", False, "stable"); time.sleep(0.3)
+assert r4 == "restart" and W.POOL["bench"], "تونل مرده: اسکن تازه (از مسیر ثبت‌شده‌ی restart_pipeline) شروع می‌شه و سرور برای بازبینی کنار می‌ره"
 print("4b) no replacement + tunnel dead -> new scan starts, old server benched for rechecks OK")
 
 # ---------- ۵) قرنطینه «به‌تفکیک شبکه»: مرده روی مودم ≠ مرده روی نت همراه؛ خطرناک سراسریه
