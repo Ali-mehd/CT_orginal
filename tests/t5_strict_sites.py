@@ -13,7 +13,7 @@ W.TGONLY[0]=False
 print("acceptance OK")
 # --- sites_pick: never returns tg-only / yt+ig-only in strict mode, even if they are the only ones
 table={"A":mk("A",TG),"B":mk("B",YI),"C":mk("C",YT),"D":mk("D",F,lat=300),"E":mk("E",F,lat=50),"X":mk("X",{},alive=False)}
-W.check_many=lambda cs,*a,**k:[dict(table[c["raw"]]) for c in cs]
+W.check=lambda c,*a,**k:dict(table[c["raw"]])  # sites_pick حالا هر سرور رو جدا (موازی) می‌سنجه
 W.danger=lambda c: False
 found=[mk(k,{}) for k in "ABC"]
 cache={}
@@ -22,17 +22,17 @@ print("only partial servers found ->",[r["raw"] for r in pool],"| tiers",W.site_
 assert pool==[]
 t=W.site_tiers(cache); assert t["ytig"]==1 and t["tg"]==1 and t["full"]==0
 found+= [mk("D",{}),mk("E",{}),mk("X",{})]
-pool=W.sites_pick(found,cache)
+pool=W.sites_pick(found,cache,first_ok=False)  # ترتیبِ کاملِ نتیجه رو می‌خوایم، نه خروجِ زودهنگام
 print("after full ones appear ->",[r["raw"] for r in pool]); assert [r["raw"] for r in pool]==["E","D"]
 # tg-only mode accepts tg servers (and full), best score first
 W.TGONLY[0]=True
-pool=W.sites_pick(found,cache); print("tg-only mode ->",[r["raw"] for r in pool]); assert {r["raw"] for r in pool}=={"A","D","E"} and pool[0]["raw"] in ("D","E")
+pool=W.sites_pick(found,cache,first_ok=False); print("tg-only mode ->",[r["raw"] for r in pool]); assert {r["raw"] for r in pool}=={"A","D","E"} and pool[0]["raw"] in ("D","E")
 W.TGONLY[0]=False
 # --- retry of failed results after 4 minutes
 calls=[0]
-def counting(cs,*a,**k):
-    calls[0]+=1; return [dict(table[c["raw"]]) for c in cs]
-W.check_many=counting
+def counting(c,*a,**k):
+    calls[0]+=1; return dict(table[c["raw"]])
+W.check=counting
 cache2={}; f2=[mk("B",{})]
 W.sites_pick(f2,cache2); W.sites_pick(f2,cache2); assert calls[0]==1       # not retested right away
 cache2["B"]["site_t"]-=300; W.sites_pick(f2,cache2); assert calls[0]==2     # retested after 4+ min
@@ -47,7 +47,7 @@ W.GEN[0]=1; W.STOP.clear()
 clock=[1000.0]; time.time=lambda: clock[0]; time.sleep=lambda x: clock.__setitem__(0,clock[0]+x)
 cfgscan.site_check=lambda port,t: TG
 cfgscan.reach=lambda c,t: None
-W.check_many=lambda cs,*a,**k:[dict(table[c["raw"]]) for c in cs]
+W.check=lambda c,*a,**k:dict(table[c["raw"]])  # sites_pick حالا هر سرور رو جدا (موازی) می‌سنجه
 started=[]; W.start_xray=lambda sel,p:(started.append(sel[0]["raw"]) or sel); W.probe_retry=lambda *a,**k:40
 W.set_active=lambda sel,ms: W.POOL.update(active=sel); W.save_good=lambda s:None
 W.sites_guard(1,"balanced",[mk("B",{}),mk("C",{}),mk("A",{})])
